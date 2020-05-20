@@ -28,6 +28,7 @@ import (
 	"github.com/openshift/library-go/pkg/controller/factory"
 	"github.com/openshift/library-go/pkg/operator/events"
 	"github.com/openshift/library-go/pkg/operator/resource/resourceapply"
+	"github.com/openshift/library-go/pkg/operator/resource/resourcehelper"
 
 	"github.com/open-cluster-management/work/pkg/helper"
 	"github.com/open-cluster-management/work/pkg/spoke/resource"
@@ -143,28 +144,41 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 			Conditions: []workapiv1.StatusCondition{},
 		}
 
-		if result.Result != nil && result.Result.GetObjectKind() != nil {
-			gvk := result.Result.GetObjectKind().GroupVersionKind()
-
-			// set gvk
-			manifestCondition.ResourceMeta.Group = gvk.Group
-			manifestCondition.ResourceMeta.Version = gvk.Version
-			manifestCondition.ResourceMeta.Kind = gvk.Kind
-
-			// set namespace/name
-			if accessor, err := meta.Accessor(result.Result); err != nil {
-				errs = append(errs, fmt.Errorf("cannot access metadata of %v: %w", result.Result, err))
+		var gvk schema.GroupVersionKind
+		var namespace, name string
+		switch t := result.Result.(type) {
+		case *unstructured.Unstructured:
+			if t == nil {
+				break
+			}
+			gvk = t.GroupVersionKind()
+			namespace = t.GetNamespace()
+			name = t.GetName()
+		default:
+			if t == nil {
+				break
+			}
+			gvk = resourcehelper.GuessObjectGroupVersionKind(t)
+			if accessor, err := meta.Accessor(t); err != nil {
+				errs = append(errs, fmt.Errorf("cannot access metadata of %v: %w", t, err))
 			} else {
-				manifestCondition.ResourceMeta.Namespace = accessor.GetNamespace()
-				manifestCondition.ResourceMeta.Name = accessor.GetName()
+				namespace = accessor.GetNamespace()
+				name = accessor.GetName()
 			}
+		}
 
-			// set resource
-			if mapping, err := m.restMapper.MappingForGVK(gvk); err != nil {
-				errs = append(errs, fmt.Errorf("unable to get rest mapping of gvk %v: %w", gvk, err))
-			} else if mapping != nil {
-				manifestCondition.ResourceMeta.Resource = mapping.Resource.Resource
-			}
+		// set gvk
+		manifestCondition.ResourceMeta.Group = gvk.Group
+		manifestCondition.ResourceMeta.Version = gvk.Version
+		manifestCondition.ResourceMeta.Kind = gvk.Kind
+
+		// set namespace/name
+		manifestCondition.ResourceMeta.Namespace = namespace
+		manifestCondition.ResourceMeta.Name = name
+
+		// set resource
+		if mapping, err := m.restMapper.MappingForGVK(gvk); err == nil {
+			manifestCondition.ResourceMeta.Resource = mapping.Resource.Resource
 		}
 
 		// Add applied status condition
