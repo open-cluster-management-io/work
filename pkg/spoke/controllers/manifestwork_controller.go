@@ -123,7 +123,7 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 	// TODO: once we make this work initially, the finalizer would live in a different loop.
 	// It will have different backoff considerations.
 	if !manifestWork.DeletionTimestamp.IsZero() {
-		if errs := m.cleanupResourceOfWork(manifestWork); len(errs) != 0 {
+		if errs := m.cleanupResourceOfWork(ctx, manifestWork); len(errs) != 0 {
 			return utilerrors.NewAggregate(errs)
 		}
 		return m.removeWorkFinalizer(ctx, manifestWork)
@@ -171,7 +171,7 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 	return err
 }
 
-func (m *ManifestWorkController) cleanupResourceOfWork(work *workapiv1.ManifestWork) []error {
+func (m *ManifestWorkController) cleanupResourceOfWork(ctx context.Context, work *workapiv1.ManifestWork) []error {
 	errs := []error{}
 	for _, manifest := range work.Spec.Workload.Manifests {
 		gvr, object, err := m.decodeUnstructured(manifest.Raw)
@@ -184,7 +184,7 @@ func (m *ManifestWorkController) cleanupResourceOfWork(work *workapiv1.ManifestW
 		err = m.spokeDynamicClient.
 			Resource(gvr).
 			Namespace(object.GetNamespace()).
-			Delete(context.TODO(), object.GetName(), metav1.DeleteOptions{})
+			Delete(ctx, object.GetName(), metav1.DeleteOptions{})
 		switch {
 		case errors.IsNotFound(err):
 			// no-oop
@@ -192,6 +192,13 @@ func (m *ManifestWorkController) cleanupResourceOfWork(work *workapiv1.ManifestW
 			errs = append(errs, fmt.Errorf(
 				"Failed to delete resource %v with key %s/%s: %w",
 				gvr, object.GetNamespace(), object.GetName(), err))
+			continue
+		default:
+			// Return err since we just trigger the delete, and check if resource is not found in
+			// the following sync.
+			errs = append(errs, fmt.Errorf(
+				"Resource %v with key %s/%s is still being deleted",
+				gvr, object.GetNamespace(), object.GetName()))
 			continue
 		}
 		klog.V(4).Infof("Successfully delete resource %v with key %s/%s", gvr, object.GetNamespace(), object.GetName())

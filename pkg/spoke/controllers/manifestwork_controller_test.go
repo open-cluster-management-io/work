@@ -430,19 +430,25 @@ func TestSync(t *testing.T) {
 func TestDeleteWork(t *testing.T) {
 	tc := newTestCase("delete multiple resources").
 		withWorkManifest(newUnstructured("v1", "Secret", "ns1", "test"), newUnstructured("v1", "Secret", "ns2", "test")).
-		withSpokeObject(newSecret("test", "ns1", "value2")).
+		withSpokeDynamicObject(newUnstructured("v1", "Secret", "ns2", "test")).
 		withExpectedWorkAction("update").
-		withExpectedDynamicAction("delete", "delete")
+		withExpectedDynamicAction("delete", "delete", "delete", "delete")
 
 	work, workKey := newManifestWork(0, tc.workManifest...)
 	work.Finalizers = []string{manifestWorkFinalizer}
 	now := metav1.Now()
 	work.ObjectMeta.SetDeletionTimestamp(&now)
-	controller := newController(work, newFakeMapper()).withKubeObject(tc.spokeObject...).withUnstructuredObject()
+	controller := newController(work, newFakeMapper()).withKubeObject(tc.spokeObject...).withUnstructuredObject(tc.spokeDynamicObject...)
 	syncContext := newFakeSyncContext(t, workKey)
 	err := controller.controller.sync(nil, syncContext)
+	if err == nil {
+		t.Errorf("Shoud return err, since one resource still being deleted")
+	}
+
+	// sync again so all resources are deleted
+	err = controller.controller.sync(nil, syncContext)
 	if err != nil {
-		t.Errorf("Should be success with no err: %v", err)
+		t.Errorf("Expect no errors in this sync loop, %v", err)
 	}
 
 	tc.validate(t, controller.dynamicClient, controller.workClient, controller.kubeClient)
