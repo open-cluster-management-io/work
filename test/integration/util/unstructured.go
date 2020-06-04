@@ -222,7 +222,7 @@ func NewServiceAccount(namespace, name string) (*unstructured.Unstructured, sche
 	return toUnstructured(obj, serviceAccountGVK, scheme), serviceAccountGVR
 }
 
-func NewRole(namespace, name string) (*unstructured.Unstructured, schema.GroupVersionResource) {
+func NewUnstructuredRole(namespace, name string) (*unstructured.Unstructured, schema.GroupVersionResource) {
 	obj := &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespace,
@@ -240,7 +240,7 @@ func NewRole(namespace, name string) (*unstructured.Unstructured, schema.GroupVe
 	return toUnstructured(obj, roleGVK, scheme), roleGVR
 }
 
-func NewRoleBinding(namespace, name, sa, role string) (*unstructured.Unstructured, schema.GroupVersionResource) {
+func NewUnstructuredRoleBinding(namespace, name, sa, role string) (*unstructured.Unstructured, schema.GroupVersionResource) {
 	obj := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespace,

@@ -7,6 +7,8 @@ import (
 
 	"github.com/openshift/library-go/pkg/operator/events"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
@@ -118,6 +120,57 @@ func CreateKubeconfigFile(clientConfig *rest.Config, filename string) error {
 	}
 
 	return clientcmd.WriteToFile(kubeconfig, filename)
+}
+
+func NewRole(namespace, name string, finalizers []string) *rbacv1.Role {
+	role := &rbacv1.Role{
+		Rules: []rbacv1.PolicyRule{
+			{
+				Verbs:     []string{"create", "get", "list", "watch"},
+				APIGroups: []string{""},
+				Resources: []string{"configmaps"},
+			},
+		},
+	}
+
+	role.Namespace = namespace
+	role.Name = name
+	role.Finalizers = finalizers
+
+	return role
+}
+
+func NewRoleBinding(namespace, name string, finalizers []string) *rbacv1.RoleBinding {
+	rolebinding := &rbacv1.RoleBinding{
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     name,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      rbacv1.ServiceAccountKind,
+				Namespace: namespace,
+				Name:      "default",
+			},
+		},
+	}
+
+	rolebinding.Namespace = namespace
+	rolebinding.Name = name
+	rolebinding.Finalizers = finalizers
+
+	return rolebinding
+}
+
+func HasFinalizer(obj runtime.Object, finalizer string) bool {
+	accessor, _ := meta.Accessor(obj)
+	for _, f := range accessor.GetFinalizers() {
+		if f == finalizer {
+			return true
+		}
+	}
+	return false
 }
 
 func NewIntegrationTestEventRecorder(componet string) events.Recorder {

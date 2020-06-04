@@ -1,4 +1,4 @@
-package integration
+package spoke
 
 import (
 	"io/ioutil"

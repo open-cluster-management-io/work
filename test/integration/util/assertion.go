@@ -2,12 +2,14 @@ package util
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"sort"
 
 	"github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -164,5 +166,29 @@ func AssertAppliedResources(workNamespace, workName string, gvrs []schema.GroupV
 		}
 
 		return reflect.DeepEqual(work.Status.AppliedResources, appliedResources)
+	}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+}
+
+func AssertNamespaceDeleted(namespace string, kubeClient kubernetes.Interface, workClient workclientset.Interface, eventuallyTimeout, eventuallyInterval int) {
+	gomega.Eventually(func() bool {
+		works, err := workClient.WorkV1().ManifestWorks(namespace).List(context.Background(), metav1.ListOptions{})
+		if err != nil {
+			return false
+		}
+		if len(works.Items) != 0 {
+			return false
+		}
+
+		_, err = kubeClient.RbacV1().Roles(namespace).Get(context.Background(), fmt.Sprintf("%s:spoke-work", namespace), metav1.GetOptions{})
+		if !errors.IsNotFound(err) {
+			return false
+		}
+
+		_, err = kubeClient.RbacV1().RoleBindings(namespace).Get(context.Background(), fmt.Sprintf("%s:spoke-work", namespace), metav1.GetOptions{})
+		if !errors.IsNotFound(err) {
+			return false
+		}
+
+		return true
 	}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
 }

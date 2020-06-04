@@ -13,6 +13,7 @@ import (
 	utilflag "k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/logs"
 
+	"github.com/open-cluster-management/work/pkg/cmd/hub"
 	"github.com/open-cluster-management/work/pkg/cmd/spoke"
 	"github.com/open-cluster-management/work/pkg/version"
 )
@@ -49,6 +50,7 @@ func newWorkCommand() *cobra.Command {
 		cmd.Version = v
 	}
 
+	cmd.AddCommand(hub.NewController())
 	cmd.AddCommand(spoke.NewWorkloadAgent())
 
 	return cmd

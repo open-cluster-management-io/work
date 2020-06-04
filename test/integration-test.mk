@@ -21,12 +21,15 @@ endif
 clean-integration-test:
 	$(RM) '$(KB_TOOLS_ARCHIVE_PATH)'
 	rm -rf $(TEST_TMP)/kubebuilder
-	$(RM) ./integration.test
+	$(RM) ./hub.test
+	$(RM) ./spoke.test
 .PHONY: clean-integration-test
 
 clean: clean-integration-test
 
 test-integration: ensure-kubebuilder-tools
-	go test -c ./test/integration
-	./integration.test -ginkgo.slowSpecThreshold=15 -ginkgo.v -ginkgo.failFast
+	go test -c ./test/integration/hub/
+	./hub.test -ginkgo.slowSpecThreshold=15 -ginkgo.v -ginkgo.failFast
+	go test -c ./test/integration/spoke/
+	./spoke.test -ginkgo.slowSpecThreshold=15 -ginkgo.v -ginkgo.failFast
 .PHONY: test-integration

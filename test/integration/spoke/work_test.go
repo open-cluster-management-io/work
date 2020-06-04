@@ -1,4 +1,4 @@
-package integration
+package spoke
 
 import (
 	"context"
@@ -216,11 +216,11 @@ var _ = ginkgo.Describe("ManifestWork", func() {
 			gvrs = append(gvrs, gvr)
 			objects = append(objects, u)
 
-			u, gvr = util.NewRole(o.SpokeClusterName, "role1")
+			u, gvr = util.NewUnstructuredRole(o.SpokeClusterName, "role1")
 			gvrs = append(gvrs, gvr)
 			objects = append(objects, u)
 
-			u, gvr = util.NewRoleBinding(o.SpokeClusterName, "rolebinding1", "sa", "role1")
+			u, gvr = util.NewUnstructuredRoleBinding(o.SpokeClusterName, "rolebinding1", "sa", "role1")
 			gvrs = append(gvrs, gvr)
 			objects = append(objects, u)
 
