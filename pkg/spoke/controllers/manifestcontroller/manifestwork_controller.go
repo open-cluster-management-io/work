@@ -141,11 +141,10 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 	case err != nil:
 		return err
 	}
-	owner := metav1.NewControllerRef(appliedManifestWork, workapiv1.GroupVersion.WithKind("AppliedManifestWork"))
 
 	errs := []error{}
 	// Apply resources on spoke cluster.
-	resourceResults := m.applyManifest(manifestWork.Spec.Workload.Manifests, controllerContext.Recorder(), *owner)
+	resourceResults := m.applyManifest(manifestWork.Spec.Workload.Manifests, controllerContext.Recorder())
 	newManifestConditions := []workapiv1.ManifestCondition{}
 	for index, result := range resourceResults {
 		if result.Error != nil {
@@ -183,7 +182,7 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 	return err
 }
 
-func (m *ManifestWorkController) applyManifest(manifests []workapiv1.Manifest, recorder events.Recorder, owner metav1.OwnerReference) []resourceapply.ApplyResult {
+func (m *ManifestWorkController) applyManifest(manifests []workapiv1.Manifest, recorder events.Recorder) []resourceapply.ApplyResult {
 	clientHolder := resourceapply.NewClientHolder().
 		WithAPIExtensionsClient(m.spokeAPIExtensionClient).
 		WithKubernetes(m.spokeKubeclient)
@@ -195,13 +194,7 @@ func (m *ManifestWorkController) applyManifest(manifests []workapiv1.Manifest, r
 	}
 	results := resourceapply.ApplyDirectly(clientHolder, recorder, func(name string) ([]byte, error) {
 		index, _ := strconv.ParseInt(name, 10, 32)
-		unstructuredObj := &unstructured.Unstructured{}
-		err := unstructuredObj.UnmarshalJSON(manifests[index].Raw)
-		if err != nil {
-			return nil, err
-		}
-		unstructuredObj.SetOwnerReferences([]metav1.OwnerReference{owner})
-		return unstructuredObj.MarshalJSON()
+		return manifests[index].Raw, nil
 	}, indexstrings...)
 
 	// Try apply with dynamic client if the manifest cannot be decoded by scheme or typed client is not found
@@ -209,7 +202,7 @@ func (m *ManifestWorkController) applyManifest(manifests []workapiv1.Manifest, r
 	for index, result := range results {
 		// Use dynamic client when scheme cannot decode manifest or typed client cannot handle the object
 		if isDecodeError(result.Error) || isUnhandledError(result.Error) {
-			results[index].Result, results[index].Changed, results[index].Error = m.applyUnstructrued(manifests[index].Raw, owner, recorder)
+			results[index].Result, results[index].Changed, results[index].Error = m.applyUnstructrued(manifests[index].Raw, recorder)
 		}
 	}
 	return results
@@ -229,13 +222,12 @@ func (m *ManifestWorkController) decodeUnstructured(data []byte) (schema.GroupVe
 	return mapping.Resource, unstructuredObj, nil
 }
 
-func (m *ManifestWorkController) applyUnstructrued(data []byte, owner metav1.OwnerReference, recorder events.Recorder) (*unstructured.Unstructured, bool, error) {
+func (m *ManifestWorkController) applyUnstructrued(data []byte, recorder events.Recorder) (*unstructured.Unstructured, bool, error) {
 	gvr, required, err := m.decodeUnstructured(data)
 	if err != nil {
 		return nil, false, err
 	}
 
-	required.SetOwnerReferences([]metav1.OwnerReference{owner})
 	existing, err := m.spokeDynamicClient.
 		Resource(gvr).
 		Namespace(required.GetNamespace()).
