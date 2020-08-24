@@ -34,7 +34,8 @@ resources:
 - ./deployment.yaml
 - ./service_account.yaml
 - ./service.yaml
-- ./webhook.yaml
+- ./manifestwork_webhook.yaml
+- ./appliedmanifestwork_webhook.yaml
 
 images:
 - name: quay.io/open-cluster-management/work:latest
