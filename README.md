@@ -1,4 +1,4 @@
-# Providing content to managed clusters
+# Providing content to the managed clusters
 
 Support a primitive that enables resources to be applied to a managed cluster.
 
