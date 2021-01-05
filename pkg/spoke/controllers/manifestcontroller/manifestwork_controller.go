@@ -2,6 +2,8 @@ package manifestcontroller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -33,6 +35,8 @@ import (
 	"github.com/open-cluster-management/work/pkg/spoke/controllers"
 	"github.com/open-cluster-management/work/pkg/spoke/resource"
 )
+
+const specHashAnnotation = "open-cluster-management.io/spec-hash"
 
 // ManifestWorkController is to reconcile the workload resources
 // fetched from hub cluster on spoke cluster.
@@ -145,14 +149,16 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 
 	errs := []error{}
 	// Apply resources on spoke cluster.
-	resourceResults := m.applyManifest(manifestWork.Spec.Workload.Manifests, controllerContext.Recorder(), *owner)
+	resourceResults := m.applyManifest(
+		manifestWork.Spec.Workload.Manifests,
+		manifestWork.Status.ResourceStatus.Manifests, controllerContext.Recorder(), *owner)
 	newManifestConditions := []workapiv1.ManifestCondition{}
 	for index, result := range resourceResults {
 		if result.Error != nil {
 			errs = append(errs, result.Error)
 		}
 
-		resourceMeta, err := buildManifestResourceMeta(index, result.Result, manifestWork.Spec.Workload.Manifests[index], m.restMapper)
+		resourceMeta, generation, err := buildManifestResourceMeta(index, result.Result, manifestWork.Spec.Workload.Manifests[index], m.restMapper)
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -163,7 +169,7 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 		}
 
 		// Add applied status condition
-		manifestCondition.Conditions = append(manifestCondition.Conditions, buildAppliedStatusCondition(result.Error))
+		manifestCondition.Conditions = append(manifestCondition.Conditions, buildAppliedStatusCondition(result.Error, generation))
 
 		newManifestConditions = append(newManifestConditions, manifestCondition)
 	}
@@ -181,7 +187,9 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 	return err
 }
 
-func (m *ManifestWorkController) applyManifest(manifests []workapiv1.Manifest, recorder events.Recorder, owner metav1.OwnerReference) []resourceapply.ApplyResult {
+// Use typed apply func at first, if the type is not recognized, fallback to use unstructured apply
+func (m *ManifestWorkController) applyManifest(
+	manifests []workapiv1.Manifest, resourcesStatus []workapiv1.ManifestCondition, recorder events.Recorder, owner metav1.OwnerReference) []resourceapply.ApplyResult {
 	clientHolder := resourceapply.NewClientHolder().
 		WithAPIExtensionsClient(m.spokeAPIExtensionClient).
 		WithKubernetes(m.spokeKubeclient)
@@ -206,8 +214,12 @@ func (m *ManifestWorkController) applyManifest(manifests []workapiv1.Manifest, r
 	// TODO we should check the certain error.
 	for index, result := range results {
 		// Use dynamic client when scheme cannot decode manifest or typed client cannot handle the object
+		var status *workapiv1.ManifestCondition
+		if len(resourcesStatus) > index {
+			status = &resourcesStatus[index]
+		}
 		if isDecodeError(result.Error) || isUnhandledError(result.Error) {
-			results[index].Result, results[index].Changed, results[index].Error = m.applyUnstructrued(manifests[index].Raw, owner, recorder)
+			results[index].Result, results[index].Changed, results[index].Error = m.applyUnstructrued(manifests[index].Raw, status, owner, recorder)
 		}
 	}
 	return results
@@ -227,13 +239,19 @@ func (m *ManifestWorkController) decodeUnstructured(data []byte) (schema.GroupVe
 	return mapping.Resource, unstructuredObj, nil
 }
 
-func (m *ManifestWorkController) applyUnstructrued(data []byte, owner metav1.OwnerReference, recorder events.Recorder) (*unstructured.Unstructured, bool, error) {
+// Update resource when
+// 1. metadat is changed
+// 2. spec hash is changed
+// 3. generation is changed
+func (m *ManifestWorkController) applyUnstructrued(
+	data []byte, resourceMeta *workapiv1.ManifestCondition, owner metav1.OwnerReference, recorder events.Recorder) (*unstructured.Unstructured, bool, error) {
 	gvr, required, err := m.decodeUnstructured(data)
 	if err != nil {
 		return nil, false, err
 	}
 
 	required.SetOwnerReferences([]metav1.OwnerReference{owner})
+	setSpecHashAnnotation(required)
 	existing, err := m.spokeDynamicClient.
 		Resource(gvr).
 		Namespace(required.GetNamespace()).
@@ -249,16 +267,16 @@ func (m *ManifestWorkController) applyUnstructrued(data []byte, owner metav1.Own
 		return nil, false, err
 	}
 
-	// Compare and update the unstrcuctured.
-	if isSameUnstructured(required, existing) {
-		return existing, false, nil
+	if isManifestModified(resourceMeta, gvr, existing, required) {
+		required.SetResourceVersion(existing.GetResourceVersion())
+		actual, err := m.spokeDynamicClient.Resource(gvr).Namespace(required.GetNamespace()).Update(
+			context.TODO(), required, metav1.UpdateOptions{})
+		recorder.Eventf(fmt.Sprintf(
+			"%s Updated", required.GetKind()), "Updated %s/%s", required.GetNamespace(), required.GetName())
+		return actual, true, err
 	}
-	required.SetResourceVersion(existing.GetResourceVersion())
-	actual, err := m.spokeDynamicClient.Resource(gvr).Namespace(required.GetNamespace()).Update(
-		context.TODO(), required, metav1.UpdateOptions{})
-	recorder.Eventf(fmt.Sprintf(
-		"%s Updated", required.GetKind()), "Updated %s/%s", required.GetNamespace(), required.GetName())
-	return actual, true, err
+
+	return existing, false, nil
 }
 
 // generateUpdateStatusFunc returns a function which aggregates manifest conditions and generates work conditions.
@@ -295,6 +313,47 @@ func (m *ManifestWorkController) generateUpdateStatusFunc(newManifestConditions 
 	}
 }
 
+// We need to check if the resource meta equals at first since the condition could map to another resource.
+// return true if the resourcemeta is not matched
+// Otherwise, return true when label/annotation is changed or generation is changed
+func isManifestModified(manifestStatus *workapiv1.ManifestCondition, gvr schema.GroupVersionResource, existing, required *unstructured.Unstructured) bool {
+	// Return true if manifeststatus cannot be found
+	if manifestStatus == nil {
+		return true
+	}
+
+	requiredResourceMeta := workapiv1.ManifestResourceMeta{
+		Ordinal:   manifestStatus.ResourceMeta.Ordinal,
+		Group:     gvr.Group,
+		Resource:  gvr.Resource,
+		Kind:      required.GetKind(),
+		Version:   gvr.Version,
+		Namespace: required.GetNamespace(),
+		Name:      required.GetName(),
+	}
+
+	//  return true if resourcemeta is not matched.
+	if requiredResourceMeta != manifestStatus.ResourceMeta {
+		return true
+	}
+
+	condition := meta.FindStatusCondition(manifestStatus.Conditions, string(workapiv1.ManifestApplied))
+	// return true if applied condition is not found
+	if condition == nil {
+		return true
+	}
+
+	if !isSameUnstructuredMeta(required, existing) {
+		return true
+	}
+
+	if existing.GetGeneration() != condition.ObservedGeneration {
+		return true
+	}
+
+	return false
+}
+
 // isDecodeError is to check if the error returned from resourceapply is due to that the object cannnot
 // be decoded or no typed client can handle the object.
 func isDecodeError(err error) bool {
@@ -307,38 +366,51 @@ func isUnhandledError(err error) bool {
 	return err != nil && strings.HasPrefix(err.Error(), "unhandled type")
 }
 
-// isSameUnstructured compares the two unstructured object.
-// The comparison ignores the metadata and status field, and check if the two objects are sementically equal.
-func isSameUnstructured(obj1, obj2 *unstructured.Unstructured) bool {
-	obj1Copy := obj1.DeepCopy()
-	obj2Copy := obj2.DeepCopy()
-
+// isSameUnstructuredMeta compares the metadata of two unstructured object.
+func isSameUnstructuredMeta(obj1, obj2 *unstructured.Unstructured) bool {
 	// Comapre gvk, name, namespace at first
-	if obj1Copy.GroupVersionKind() != obj2Copy.GroupVersionKind() {
+	if obj1.GroupVersionKind() != obj2.GroupVersionKind() {
 		return false
 	}
-	if obj1Copy.GetName() != obj2Copy.GetName() {
+	if obj1.GetName() != obj2.GetName() {
 		return false
 	}
-	if obj1Copy.GetNamespace() != obj2Copy.GetNamespace() {
+	if obj1.GetNamespace() != obj2.GetNamespace() {
 		return false
 	}
 
 	// Compare label and annotations
-	if !equality.Semantic.DeepEqual(obj1Copy.GetLabels(), obj2Copy.GetLabels()) {
+	if !equality.Semantic.DeepEqual(obj1.GetLabels(), obj2.GetLabels()) {
 		return false
 	}
-	if !equality.Semantic.DeepEqual(obj1Copy.GetAnnotations(), obj2Copy.GetAnnotations()) {
+	if !equality.Semantic.DeepEqual(obj1.GetAnnotations(), obj2.GetAnnotations()) {
 		return false
 	}
 
-	// Compare sementically after removing metadata and status field
-	delete(obj1Copy.Object, "metadata")
-	delete(obj2Copy.Object, "metadata")
-	delete(obj1Copy.Object, "status")
-	delete(obj2Copy.Object, "status")
+	return true
+}
 
-	return equality.Semantic.DeepEqual(obj1Copy.Object, obj2Copy.Object)
+// setSpecHashAnnotation computes the hash of the provided spec and sets an annotation of the
+// hash on the provided unstructured objectt. This method is used internally by Apply<type> methods.
+func setSpecHashAnnotation(obj *unstructured.Unstructured) error {
+	data := obj.DeepCopy().Object
+	// do not hash metadata and status section
+	delete(data, "metadata")
+	delete(data, "status")
+
+	jsonBytes, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	specHash := fmt.Sprintf("%x", sha256.Sum256(jsonBytes))
+	annotation := obj.GetAnnotations()
+	if annotation == nil {
+		annotation = map[string]string{}
+	}
+	annotation[specHashAnnotation] = specHash
+	obj.SetAnnotations(annotation)
+	return nil
 }
 
 // allInCondition checks status of conditions with a particular type in ManifestCondition array.
@@ -359,35 +431,37 @@ func allInCondition(conditionType string, manifests []workapiv1.ManifestConditio
 	return exists, exists
 }
 
-func buildAppliedStatusCondition(err error) metav1.Condition {
+func buildAppliedStatusCondition(err error, generation int64) metav1.Condition {
 	if err != nil {
 		return metav1.Condition{
-			Type:    string(workapiv1.ManifestApplied),
-			Status:  metav1.ConditionFalse,
-			Reason:  "AppliedManifestFailed",
-			Message: fmt.Sprintf("Failed to apply manifest: %v", err),
+			Type:               string(workapiv1.ManifestApplied),
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: generation,
+			Reason:             "AppliedManifestFailed",
+			Message:            fmt.Sprintf("Failed to apply manifest: %v", err),
 		}
 	}
 
 	return metav1.Condition{
-		Type:    string(workapiv1.ManifestApplied),
-		Status:  metav1.ConditionTrue,
-		Reason:  "AppliedManifestComplete",
-		Message: "Apply manifest complete",
+		Type:               string(workapiv1.ManifestApplied),
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: generation,
+		Reason:             "AppliedManifestComplete",
+		Message:            "Apply manifest complete",
 	}
 }
 
 // buildManifestResourceMeta returns resource meta for manifest. It tries to get the resource
 // meta from the result object in ApplyResult struct. If the resource meta is incompleted, fall
 // back to manifest template for the meta info.
-func buildManifestResourceMeta(index int, object runtime.Object, manifest workapiv1.Manifest, restMapper *resource.Mapper) (resourceMeta workapiv1.ManifestResourceMeta, err error) {
+func buildManifestResourceMeta(index int, object runtime.Object, manifest workapiv1.Manifest, restMapper *resource.Mapper) (resourceMeta workapiv1.ManifestResourceMeta, generation int64, err error) {
 	errs := []error{}
 
-	resourceMeta, err = buildResourceMeta(index, object, restMapper)
+	resourceMeta, generation, err = buildResourceMeta(index, object, restMapper)
 	if err != nil {
 		errs = append(errs, err)
 	} else if len(resourceMeta.Kind) > 0 && len(resourceMeta.Version) > 0 && len(resourceMeta.Name) > 0 {
-		return resourceMeta, nil
+		return resourceMeta, generation, nil
 	}
 
 	// try to get resource meta from manifest if the one got from apply result is incompleted
@@ -398,31 +472,32 @@ func buildManifestResourceMeta(index int, object runtime.Object, manifest workap
 		unstructuredObj := &unstructured.Unstructured{}
 		if err = unstructuredObj.UnmarshalJSON(manifest.Raw); err != nil {
 			errs = append(errs, err)
-			return resourceMeta, utilerrors.NewAggregate(errs)
+			return resourceMeta, generation, utilerrors.NewAggregate(errs)
 		}
 		object = unstructuredObj
 	}
-	resourceMeta, err = buildResourceMeta(index, object, restMapper)
+	resourceMeta, generation, err = buildResourceMeta(index, object, restMapper)
 	if err == nil {
-		return resourceMeta, nil
+		return resourceMeta, generation, nil
 	}
 
-	return resourceMeta, utilerrors.NewAggregate(errs)
+	return resourceMeta, generation, utilerrors.NewAggregate(errs)
 }
 
-func buildResourceMeta(index int, object runtime.Object, restMapper *resource.Mapper) (resourceMeta workapiv1.ManifestResourceMeta, err error) {
+func buildResourceMeta(index int, object runtime.Object, restMapper *resource.Mapper) (resourceMeta workapiv1.ManifestResourceMeta, generation int64, err error) {
+
 	resourceMeta = workapiv1.ManifestResourceMeta{
 		Ordinal: int32(index),
 	}
 
 	if object == nil || reflect.ValueOf(object).IsNil() {
-		return resourceMeta, err
+		return resourceMeta, generation, err
 	}
 
 	// set gvk
 	gvk, err := helper.GuessObjectGroupVersionKind(object)
 	if err != nil {
-		return resourceMeta, err
+		return resourceMeta, generation, err
 	}
 	resourceMeta.Group = gvk.Group
 	resourceMeta.Version = gvk.Version
@@ -434,15 +509,16 @@ func buildResourceMeta(index int, object runtime.Object, restMapper *resource.Ma
 	} else {
 		resourceMeta.Namespace = accessor.GetNamespace()
 		resourceMeta.Name = accessor.GetName()
+		generation = accessor.GetGeneration()
 	}
 
 	// set resource
 	if restMapper == nil {
-		return resourceMeta, err
+		return resourceMeta, generation, err
 	}
 	if mapping, e := restMapper.MappingForGVK(*gvk); e == nil {
 		resourceMeta.Resource = mapping.Resource.Resource
 	}
 
-	return resourceMeta, err
+	return resourceMeta, generation, err
 }

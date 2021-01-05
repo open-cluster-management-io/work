@@ -11,6 +11,7 @@ import (
 	"github.com/openshift/library-go/pkg/controller/controllercmd"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -450,6 +451,112 @@ var _ = ginkgo.Describe("ManifestWork", func() {
 
 			ginkgo.By("check if resources which are no longer maintained have been deleted")
 			util.AssertNonexistenceOfResources([]schema.GroupVersionResource{gvrs[3]}, []string{oldServiceAccount.GetNamespace()}, []string{oldServiceAccount.GetName()}, spokeDynamicClient, eventuallyTimeout, eventuallyInterval)
+		})
+	})
+
+	ginkgo.Context("Update resource by spechash and generation", func() {
+		ginkgo.BeforeEach(func() {
+			u, _, err := util.NewDeployment(o.SpokeClusterName, "deploy1", "admin")
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			manifests = []workapiv1.Manifest{util.ToManifest(u)}
+		})
+
+		ginkgo.It("should updated Deployment when manifestwork is updated", func() {
+			util.AssertWorkCondition(work.Namespace, work.Name, hubWorkClient, string(workapiv1.WorkApplied), metav1.ConditionTrue,
+				[]metav1.ConditionStatus{metav1.ConditionTrue},
+				eventuallyTimeout, eventuallyInterval)
+			u, _, err := util.NewDeployment(o.SpokeClusterName, "deploy1", "admin")
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+			// Update manifestwork
+			err = unstructured.SetNestedField(u.Object, "non-admin", "spec", "template", "spec", "serviceAccountName")
+			work, err = hubWorkClient.WorkV1().ManifestWorks(o.SpokeClusterName).Get(context.Background(), work.Name, metav1.GetOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			work.Spec.Workload.Manifests = []workapiv1.Manifest{util.ToManifest(u)}
+
+			_, err = hubWorkClient.WorkV1().ManifestWorks(o.SpokeClusterName).Update(context.Background(), work, metav1.UpdateOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+			// check if resource has been updated
+			gomega.Eventually(func() bool {
+				deploy, err := spokeKubeClient.AppsV1().Deployments(o.SpokeClusterName).Get(context.Background(), "deploy1", metav1.GetOptions{})
+				if err != nil {
+					return false
+				}
+				if deploy.Spec.Template.Spec.ServiceAccountName != "non-admin" {
+					return false
+				}
+
+				work, err := hubWorkClient.WorkV1().ManifestWorks(o.SpokeClusterName).Get(context.Background(), work.Name, metav1.GetOptions{})
+				if err != nil {
+					return false
+				}
+				if len(work.Status.ResourceStatus.Manifests) != 1 {
+					return false
+				}
+				appliedCondition := meta.FindStatusCondition(work.Status.ResourceStatus.Manifests[0].Conditions, string(workapiv1.ManifestApplied))
+				if appliedCondition == nil {
+					return false
+				}
+				if appliedCondition.ObservedGeneration != deploy.Generation {
+					return false
+				}
+
+				return true
+			}, 20*eventuallyTimeout, 10*eventuallyInterval).Should(gomega.BeTrue())
+		})
+
+		ginkgo.It("should revert Deployment if it is updated on spoke", func() {
+			util.AssertWorkCondition(work.Namespace, work.Name, hubWorkClient, string(workapiv1.WorkApplied), metav1.ConditionTrue,
+				[]metav1.ConditionStatus{metav1.ConditionTrue},
+				eventuallyTimeout, eventuallyInterval)
+
+			// Get observed generation from work
+			work, err = hubWorkClient.WorkV1().ManifestWorks(o.SpokeClusterName).Get(context.Background(), work.Name, metav1.GetOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			gomega.Expect(len(work.Status.ResourceStatus.Manifests)).Should(gomega.Equal(1))
+
+			appliedCondition := meta.FindStatusCondition(work.Status.ResourceStatus.Manifests[0].Conditions, string(workapiv1.ManifestApplied))
+			gomega.Expect(appliedCondition).ShouldNot(gomega.BeNil())
+
+			// Get acctual generation from work
+			deploy, err := spokeKubeClient.AppsV1().Deployments(o.SpokeClusterName).Get(context.Background(), "deploy1", metav1.GetOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			gomega.Expect(appliedCondition.ObservedGeneration).Should(gomega.Equal(deploy.Generation))
+
+			// Update deployment
+			deploy.Spec.Template.Spec.ServiceAccountName = "non-admin"
+			_, err = spokeKubeClient.AppsV1().Deployments(o.SpokeClusterName).Update(context.Background(), deploy, metav1.UpdateOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+			// check if resource will be reverted
+			gomega.Eventually(func() bool {
+				deploy, err := spokeKubeClient.AppsV1().Deployments(o.SpokeClusterName).Get(context.Background(), "deploy1", metav1.GetOptions{})
+				if err != nil {
+					return false
+				}
+				if deploy.Spec.Template.Spec.ServiceAccountName != "admin" {
+					return false
+				}
+
+				work, err := hubWorkClient.WorkV1().ManifestWorks(o.SpokeClusterName).Get(context.Background(), work.Name, metav1.GetOptions{})
+				if err != nil {
+					return false
+				}
+				if len(work.Status.ResourceStatus.Manifests) != 1 {
+					return false
+				}
+				appliedCondition := meta.FindStatusCondition(work.Status.ResourceStatus.Manifests[0].Conditions, string(workapiv1.ManifestApplied))
+				if appliedCondition == nil {
+					return false
+				}
+				if appliedCondition.ObservedGeneration != deploy.Generation {
+					return false
+				}
+
+				return true
+			}, 20*eventuallyTimeout, 10*eventuallyInterval).Should(gomega.BeTrue())
+
 		})
 	})
 

@@ -100,6 +100,7 @@ type testCase struct {
 	workManifest               []*unstructured.Unstructured
 	spokeObject                []runtime.Object
 	spokeDynamicObject         []runtime.Object
+	manifestConditions         []workapiv1.ManifestCondition
 	expectedWorkAction         []string
 	expectedKubeAction         []string
 	expectedAppliedWorkAction  []string
@@ -117,6 +118,7 @@ func newTestCase(name string) *testCase {
 	return &testCase{
 		name:                       name,
 		workManifest:               []*unstructured.Unstructured{},
+		manifestConditions:         []workapiv1.ManifestCondition{},
 		spokeObject:                []runtime.Object{},
 		spokeDynamicObject:         []runtime.Object{},
 		expectedWorkAction:         []string{},
@@ -130,6 +132,11 @@ func newTestCase(name string) *testCase {
 
 func (t *testCase) withWorkManifest(objects ...*unstructured.Unstructured) *testCase {
 	t.workManifest = objects
+	return t
+}
+
+func (t *testCase) withManiifestCondition(conds ...workapiv1.ManifestCondition) *testCase {
+	t.manifestConditions = conds
 	return t
 }
 
@@ -229,12 +236,13 @@ func (t *testCase) validate(
 	}
 }
 
-func newCondition(name, status, reason, message string, lastTransition *metav1.Time) metav1.Condition {
+func newCondition(name, status, reason, message string, generation int64, lastTransition *metav1.Time) metav1.Condition {
 	ret := metav1.Condition{
-		Type:    name,
-		Status:  metav1.ConditionStatus(status),
-		Reason:  reason,
-		Message: message,
+		Type:               name,
+		Status:             metav1.ConditionStatus(status),
+		ObservedGeneration: generation,
+		Reason:             reason,
+		Message:            message,
 	}
 	if lastTransition != nil {
 		ret.LastTransitionTime = *lastTransition
@@ -242,11 +250,26 @@ func newCondition(name, status, reason, message string, lastTransition *metav1.T
 	return ret
 }
 
-func newManifestCondition(ordinal int32, resource string, conds ...metav1.Condition) workapiv1.ManifestCondition {
+func newManifestCondition(ordinal int32, resource, kind, name, version string, conds ...metav1.Condition) workapiv1.ManifestCondition {
 	return workapiv1.ManifestCondition{
-		ResourceMeta: workapiv1.ManifestResourceMeta{Ordinal: ordinal, Resource: resource},
-		Conditions:   conds,
+		ResourceMeta: workapiv1.ManifestResourceMeta{
+			Ordinal:  ordinal,
+			Resource: resource,
+			Name:     name,
+			Kind:     kind,
+			Version:  version,
+		},
+		Conditions: conds,
 	}
+}
+
+func newUnstructuredWithContentGeneration(
+	apiVersion, kind, namespace, name string, generation int64, content map[string]interface{},
+) *unstructured.Unstructured {
+	obj := spoketesting.NewUnstructuredWithContent(apiVersion, kind, namespace, name, content)
+	setSpecHashAnnotation(obj)
+	obj.SetGeneration(generation)
+	return obj
 }
 
 func findManifestConditionByIndex(index int32, conds []workapiv1.ManifestCondition) *workapiv1.ManifestCondition {
@@ -295,12 +318,39 @@ func TestSync(t *testing.T) {
 			withExpectedDynamicAction("get", "create").
 			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}).
 			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionTrue}),
-		newTestCase("update single unstructured resource").
-			withWorkManifest(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val1"}})).
-			withSpokeDynamicObject(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val2"}})).
+		newTestCase("update single unstructured resource with different generation").
+			withWorkManifest(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val1"}})).
+			withSpokeDynamicObject(newUnstructuredWithContentGeneration("v1", "NewObject", "", "n1", 2, map[string]interface{}{"spec": map[string]interface{}{"key1": "val2"}})).
+			withManiifestCondition(newManifestCondition(0, "newobjects", "NewObject", "n1", "v1", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionTrue), "my-reason", "my-message", 1, nil))).
 			withExpectedWorkAction("get", "update").
 			withAppliedWorkAction("create").
 			withExpectedDynamicAction("get", "update").
+			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}).
+			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionTrue}),
+		newTestCase("update single unstructured resource with no condition").
+			withWorkManifest(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val1"}})).
+			withSpokeDynamicObject(newUnstructuredWithContentGeneration("v1", "NewObject", "", "n1", 2, map[string]interface{}{"spec": map[string]interface{}{"key1": "val2"}})).
+			withExpectedWorkAction("get", "update").
+			withAppliedWorkAction("create").
+			withExpectedDynamicAction("get", "update").
+			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}).
+			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionTrue}),
+		newTestCase("update unstructured resource with different spec").
+			withWorkManifest(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val1"}})).
+			withSpokeDynamicObject(newUnstructuredWithContentGeneration("v1", "NewObject", "", "n1", 1, map[string]interface{}{"spec": map[string]interface{}{"key1": "val2"}})).
+			withManiifestCondition(newManifestCondition(0, "newobjects", "NewObject", "n1", "v1", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionTrue), "my-reason", "my-message", 1, nil))).
+			withExpectedWorkAction("get", "update").
+			withAppliedWorkAction("create").
+			withExpectedDynamicAction("get", "update").
+			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}).
+			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionTrue}),
+		newTestCase("no update single unstructured resource").
+			withWorkManifest(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val1"}})).
+			withSpokeDynamicObject(newUnstructuredWithContentGeneration("v1", "NewObject", "", "n1", 1, map[string]interface{}{"spec": map[string]interface{}{"key1": "val1"}})).
+			withManiifestCondition(newManifestCondition(0, "newobjects", "NewObject", "n1", "v1", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionTrue), "my-reason", "my-message", 1, nil))).
+			withExpectedWorkAction("get", "update").
+			withAppliedWorkAction("create").
+			withExpectedDynamicAction("get").
 			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}).
 			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionTrue}),
 		newTestCase("multiple create&update resource").
@@ -316,6 +366,7 @@ func TestSync(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			work, workKey := spoketesting.NewManifestWork(0, c.workManifest...)
+			work.Status.ResourceStatus = workapiv1.ManifestResourceStatus{Manifests: c.manifestConditions}
 			work.Finalizers = []string{controllers.ManifestWorkFinalizer}
 			controller := newController(work, nil, spoketesting.NewFakeRestMapper()).
 				withKubeObject(c.spokeObject...).
@@ -396,10 +447,38 @@ func TestIsSameUnstructured(t *testing.T) {
 			expected: false,
 		},
 		{
+			name: "different labels",
+			obj1: func() *unstructured.Unstructured {
+				obj := spoketesting.NewUnstructured("v1", "Kind1", "ns1", "n1")
+				obj.SetLabels(map[string]string{"label1": "val1"})
+				return obj
+			}(),
+			obj2: func() *unstructured.Unstructured {
+				obj := spoketesting.NewUnstructured("v1", "Kind1", "ns1", "n1")
+				obj.SetLabels(map[string]string{"label2": "val2"})
+				return obj
+			}(),
+			expected: false,
+		},
+		{
+			name: "different annotation",
+			obj1: func() *unstructured.Unstructured {
+				obj := spoketesting.NewUnstructured("v1", "Kind1", "ns1", "n1")
+				obj.SetAnnotations(map[string]string{"key1": "val1"})
+				return obj
+			}(),
+			obj2: func() *unstructured.Unstructured {
+				obj := spoketesting.NewUnstructured("v1", "Kind1", "ns1", "n1")
+				obj.SetAnnotations(map[string]string{"key2": "val2"})
+				return obj
+			}(),
+			expected: false,
+		},
+		{
 			name:     "different spec",
 			obj1:     spoketesting.NewUnstructuredWithContent("v1", "Kind1", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val1"}}),
 			obj2:     spoketesting.NewUnstructuredWithContent("v1", "Kind1", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val2"}}),
-			expected: false,
+			expected: true,
 		},
 		{
 			name:     "same spec, different status",
@@ -411,7 +490,7 @@ func TestIsSameUnstructured(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			actual := isSameUnstructured(c.obj1, c.obj2)
+			actual := isSameUnstructuredMeta(c.obj1, c.obj2)
 			if c.expected != actual {
 				t.Errorf("expected %t, but %t", c.expected, actual)
 			}
@@ -436,47 +515,47 @@ func TestGenerateUpdateStatusFunc(t *testing.T) {
 		{
 			name: "all manifests are applied successfully",
 			manifestConditions: []workapiv1.ManifestCondition{
-				newManifestCondition(0, "resource0", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionTrue), "my-reason", "my-message", nil)),
-				newManifestCondition(1, "resource1", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionTrue), "my-reason", "my-message", nil)),
+				newManifestCondition(0, "resource0", "kind0", "n0", "v1", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionTrue), "my-reason", "my-message", 0, nil)),
+				newManifestCondition(1, "resource1", "kind1", "n0", "v1", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionTrue), "my-reason", "my-message", 0, nil)),
 			},
 			expectedStatusConditions: []metav1.Condition{
-				newCondition(string(workapiv1.WorkApplied), string(metav1.ConditionTrue), "AppliedManifestWorkComplete", "Apply manifest work complete", nil),
+				newCondition(string(workapiv1.WorkApplied), string(metav1.ConditionTrue), "AppliedManifestWorkComplete", "Apply manifest work complete", 0, nil),
 			},
 		},
 		{
 			name: "one of manifests is not applied",
 			manifestConditions: []workapiv1.ManifestCondition{
-				newManifestCondition(0, "resource0", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionTrue), "my-reason", "my-message", nil)),
-				newManifestCondition(1, "resource1", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionFalse), "my-reason", "my-message", nil)),
+				newManifestCondition(0, "resource0", "kind0", "n0", "v1", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionTrue), "my-reason", "my-message", 0, nil)),
+				newManifestCondition(1, "resource1", "kind1", "n0", "v1", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionFalse), "my-reason", "my-message", 0, nil)),
 			},
 			expectedStatusConditions: []metav1.Condition{
-				newCondition(string(workapiv1.WorkApplied), string(metav1.ConditionFalse), "AppliedManifestWorkFailed", "Failed to apply manifest work", nil),
+				newCondition(string(workapiv1.WorkApplied), string(metav1.ConditionFalse), "AppliedManifestWorkFailed", "Failed to apply manifest work", 0, nil),
 			},
 		},
 		{
 			name: "update existing status condition",
 			startingStatusConditions: []metav1.Condition{
-				newCondition(string(workapiv1.WorkApplied), string(metav1.ConditionTrue), "AppliedManifestWorkComplete", "Apply manifest work complete", &transitionTime),
+				newCondition(string(workapiv1.WorkApplied), string(metav1.ConditionTrue), "AppliedManifestWorkComplete", "Apply manifest work complete", 0, &transitionTime),
 			},
 			manifestConditions: []workapiv1.ManifestCondition{
-				newManifestCondition(0, "resource0", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionTrue), "my-reason", "my-message", nil)),
-				newManifestCondition(1, "resource1", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionTrue), "my-reason", "my-message", nil)),
+				newManifestCondition(0, "resource0", "kind0", "n0", "v1", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionTrue), "my-reason", "my-message", 0, nil)),
+				newManifestCondition(1, "resource1", "kind1", "n0", "v1", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionTrue), "my-reason", "my-message", 0, nil)),
 			},
 			expectedStatusConditions: []metav1.Condition{
-				newCondition(string(workapiv1.WorkApplied), string(metav1.ConditionTrue), "AppliedManifestWorkComplete", "Apply manifest work complete", &transitionTime),
+				newCondition(string(workapiv1.WorkApplied), string(metav1.ConditionTrue), "AppliedManifestWorkComplete", "Apply manifest work complete", 0, &transitionTime),
 			},
 		},
 		{
 			name: "override existing status conditions",
 			startingStatusConditions: []metav1.Condition{
-				newCondition(string(workapiv1.WorkApplied), string(metav1.ConditionTrue), "AppliedManifestWorkComplete", "Apply manifest work complete", nil),
+				newCondition(string(workapiv1.WorkApplied), string(metav1.ConditionTrue), "AppliedManifestWorkComplete", "Apply manifest work complete", 0, nil),
 			},
 			manifestConditions: []workapiv1.ManifestCondition{
-				newManifestCondition(0, "resource0", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionTrue), "my-reason", "my-message", nil)),
-				newManifestCondition(1, "resource1", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionFalse), "my-reason", "my-message", nil)),
+				newManifestCondition(0, "resource0", "kind0", "n0", "v1", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionTrue), "my-reason", "my-message", 0, nil)),
+				newManifestCondition(1, "resource1", "kind1", "n0", "v1", newCondition(string(workapiv1.ManifestApplied), string(metav1.ConditionFalse), "my-reason", "my-message", 0, nil)),
 			},
 			expectedStatusConditions: []metav1.Condition{
-				newCondition(string(workapiv1.WorkApplied), string(metav1.ConditionFalse), "AppliedManifestWorkFailed", "Failed to apply manifest work", nil),
+				newCondition(string(workapiv1.WorkApplied), string(metav1.ConditionFalse), "AppliedManifestWorkFailed", "Failed to apply manifest work", 0, nil),
 			},
 		},
 	}
@@ -518,8 +597,8 @@ func TestAllInCondition(t *testing.T) {
 			name:          "condition does not exist",
 			conditionType: "one",
 			manifestConditions: []workapiv1.ManifestCondition{
-				newManifestCondition(0, "resource0", newCondition("two", string(metav1.ConditionTrue), "my-reason", "my-message", nil)),
-				newManifestCondition(1, "resource1", newCondition("two", string(metav1.ConditionFalse), "my-reason", "my-message", nil)),
+				newManifestCondition(0, "resource0", "kind0", "n0", "v1", newCondition("two", string(metav1.ConditionTrue), "my-reason", "my-message", 0, nil)),
+				newManifestCondition(1, "resource1", "kind1", "n0", "v1", newCondition("two", string(metav1.ConditionFalse), "my-reason", "my-message", 0, nil)),
 			},
 			expected: []bool{false, false},
 		},
@@ -527,10 +606,10 @@ func TestAllInCondition(t *testing.T) {
 			name:          "all manifests are in the condition",
 			conditionType: "one",
 			manifestConditions: []workapiv1.ManifestCondition{
-				newManifestCondition(0, "resource0", newCondition("one", string(metav1.ConditionTrue), "my-reason", "my-message", nil)),
-				newManifestCondition(1, "resource1", newCondition("one", string(metav1.ConditionTrue), "my-reason", "my-message", nil)),
-				newManifestCondition(2, "resource0", newCondition("two", string(metav1.ConditionTrue), "my-reason", "my-message", nil)),
-				newManifestCondition(3, "resource1", newCondition("two", string(metav1.ConditionFalse), "my-reason", "my-message", nil)),
+				newManifestCondition(0, "resource0", "kind0", "n0", "v1", newCondition("one", string(metav1.ConditionTrue), "my-reason", "my-message", 0, nil)),
+				newManifestCondition(1, "resource1", "kind1", "n0", "v1", newCondition("one", string(metav1.ConditionTrue), "my-reason", "my-message", 0, nil)),
+				newManifestCondition(2, "resource0", "kind0", "n0", "v1", newCondition("two", string(metav1.ConditionTrue), "my-reason", "my-message", 0, nil)),
+				newManifestCondition(3, "resource1", "kind1", "n0", "v1", newCondition("two", string(metav1.ConditionFalse), "my-reason", "my-message", 0, nil)),
 			},
 			expected: []bool{true, true},
 		},
@@ -538,10 +617,10 @@ func TestAllInCondition(t *testing.T) {
 			name:          "one of manifests is not in the condition",
 			conditionType: "two",
 			manifestConditions: []workapiv1.ManifestCondition{
-				newManifestCondition(0, "resource0", newCondition("one", string(metav1.ConditionTrue), "my-reason", "my-message", nil)),
-				newManifestCondition(1, "resource1", newCondition("one", string(metav1.ConditionTrue), "my-reason", "my-message", nil)),
-				newManifestCondition(2, "resource0", newCondition("two", string(metav1.ConditionTrue), "my-reason", "my-message", nil)),
-				newManifestCondition(3, "resource1", newCondition("two", string(metav1.ConditionFalse), "my-reason", "my-message", nil)),
+				newManifestCondition(0, "resource0", "kind0", "n0", "v1", newCondition("one", string(metav1.ConditionTrue), "my-reason", "my-message", 0, nil)),
+				newManifestCondition(1, "resource1", "kind1", "n0", "v1", newCondition("one", string(metav1.ConditionTrue), "my-reason", "my-message", 0, nil)),
+				newManifestCondition(2, "resource0", "kind0", "n0", "v1", newCondition("two", string(metav1.ConditionTrue), "my-reason", "my-message", 0, nil)),
+				newManifestCondition(3, "resource1", "kind1", "n0", "v1", newCondition("two", string(metav1.ConditionFalse), "my-reason", "my-message", 0, nil)),
 			},
 			expected: []bool{false, true},
 		},
@@ -612,7 +691,7 @@ func TestBuildResourceMeta(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			actual, err := buildResourceMeta(0, c.object, c.restMapper)
+			actual, _, err := buildResourceMeta(0, c.object, c.restMapper)
 			if err != nil {
 				t.Errorf("Should be success with no err: %v", err)
 			}
@@ -653,7 +732,7 @@ func TestBuildManifestResourceMeta(t *testing.T) {
 			if c.manifestObject != nil {
 				manifest.Object = c.manifestObject
 			}
-			actual, err := buildManifestResourceMeta(0, c.applyResult, manifest, c.restMapper)
+			actual, _, err := buildManifestResourceMeta(0, c.applyResult, manifest, c.restMapper)
 			if err != nil {
 				t.Errorf("Should be success with no err: %v", err)
 			}

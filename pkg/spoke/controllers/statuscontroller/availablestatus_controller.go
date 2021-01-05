@@ -197,7 +197,7 @@ func buildAvailableStatusCondition(resourceMeta workapiv1.ManifestResourceMeta, 
 		}
 	}
 
-	available, err := isResourceAvailable(resourceMeta.Namespace, resourceMeta.Name, schema.GroupVersionResource{
+	available, generation, err := isResourceAvailable(resourceMeta.Namespace, resourceMeta.Name, schema.GroupVersionResource{
 		Group:    resourceMeta.Group,
 		Version:  resourceMeta.Version,
 		Resource: resourceMeta.Resource,
@@ -213,10 +213,11 @@ func buildAvailableStatusCondition(resourceMeta workapiv1.ManifestResourceMeta, 
 
 	if available {
 		return metav1.Condition{
-			Type:    conditionType,
-			Status:  metav1.ConditionTrue,
-			Reason:  "ResourceAvailable",
-			Message: "Resource is available",
+			Type:               conditionType,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: generation,
+			Reason:             "ResourceAvailable",
+			Message:            "Resource is available",
 		}
 	}
 
@@ -229,13 +230,13 @@ func buildAvailableStatusCondition(resourceMeta workapiv1.ManifestResourceMeta, 
 }
 
 // isResourceAvailable checks if the specific resource is available or not
-func isResourceAvailable(namespace, name string, gvr schema.GroupVersionResource, dynamicClient dynamic.Interface) (bool, error) {
-	_, err := dynamicClient.Resource(gvr).Namespace(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+func isResourceAvailable(namespace, name string, gvr schema.GroupVersionResource, dynamicClient dynamic.Interface) (bool, int64, error) {
+	obj, err := dynamicClient.Resource(gvr).Namespace(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	if errors.IsNotFound(err) {
-		return false, nil
+		return false, 0, nil
 	}
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
-	return true, nil
+	return true, obj.GetGeneration(), nil
 }
