@@ -271,6 +271,7 @@ func TestSync(t *testing.T) {
 			withExpectedWorkAction("get", "update").
 			withAppliedWorkAction("create").
 			withExpectedKubeAction("get", "create").
+			withExpectedDynamicAction("get").
 			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}).
 			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionTrue}),
 		newTestCase("create single deployment resource").
@@ -286,6 +287,7 @@ func TestSync(t *testing.T) {
 			withExpectedWorkAction("get", "update").
 			withAppliedWorkAction("create").
 			withExpectedKubeAction("get", "delete", "create").
+			withExpectedDynamicAction("get").
 			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}).
 			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionTrue}),
 		newTestCase("create single unstructured resource").
@@ -309,8 +311,30 @@ func TestSync(t *testing.T) {
 			withExpectedWorkAction("get", "update").
 			withAppliedWorkAction("create").
 			withExpectedKubeAction("get", "delete", "create", "get", "create").
+			withExpectedDynamicAction("get", "get").
 			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}, expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}).
 			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionTrue}),
+		newTestCase("update single resource owned by another fails").
+			withWorkManifest(spoketesting.NewUnstructured("v1", "Secret", "ns1", "test")).
+			withSpokeDynamicObject(func() runtime.Object {
+				secret := spoketesting.NewUnstructuredWithContent("v1", "Secret", "ns1", "test", map[string]interface{}{"spec": map[string]interface{}{"key1": "val2"}})
+				controller := true
+				secret.SetOwnerReferences([]metav1.OwnerReference{
+					{
+						APIVersion: "open-cluster-management.io/v1",
+						Kind:       "ApplieManifestWork",
+						Name:       "test",
+						Controller: &controller,
+						UID:        "1",
+					},
+				})
+				return secret
+			}()).
+			withExpectedWorkAction("get", "update").
+			withAppliedWorkAction("create").
+			withExpectedDynamicAction("get").
+			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionFalse}).
+			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionFalse}),
 	}
 
 	for _, c := range cases {
@@ -321,10 +345,7 @@ func TestSync(t *testing.T) {
 				withKubeObject(c.spokeObject...).
 				withUnstructuredObject(c.spokeDynamicObject...)
 			syncContext := spoketesting.NewFakeSyncContext(t, workKey)
-			err := controller.controller.sync(nil, syncContext)
-			if err != nil {
-				t.Errorf("Should be success with no err: %v", err)
-			}
+			controller.controller.sync(nil, syncContext)
 
 			c.validate(t, controller.dynamicClient, controller.workClient, controller.kubeClient)
 		})
@@ -339,6 +360,7 @@ func TestFailedToApplyResource(t *testing.T) {
 		withExpectedWorkAction("get", "update").
 		withAppliedWorkAction("create").
 		withExpectedKubeAction("get", "delete", "create", "get", "create").
+		withExpectedDynamicAction("get", "get").
 		withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}, expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionFalse}).
 		withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionFalse})
 

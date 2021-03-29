@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"strconv"
 	"strings"
 	"time"
 
@@ -141,13 +140,12 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 	case err != nil:
 		return err
 	}
-	owner := metav1.NewControllerRef(appliedManifestWork, workapiv1.GroupVersion.WithKind("AppliedManifestWork"))
 
 	errs := []error{}
 	// Apply resources on spoke cluster.
-	resourceResults := m.applyManifest(manifestWork.Spec.Workload.Manifests, controllerContext.Recorder(), *owner)
 	newManifestConditions := []workapiv1.ManifestCondition{}
-	for index, result := range resourceResults {
+	for index, manifest := range manifestWork.Spec.Workload.Manifests {
+		result := m.applyManifest(manifest, controllerContext.Recorder(), appliedManifestWork)
 		if result.Error != nil {
 			errs = append(errs, result.Error)
 		}
@@ -181,36 +179,74 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 	return err
 }
 
-func (m *ManifestWorkController) applyManifest(manifests []workapiv1.Manifest, recorder events.Recorder, owner metav1.OwnerReference) []resourceapply.ApplyResult {
+// applyManifest apply the manifest to the managed cluster. The ownerref to appliedmanifestwork is added to each resource.
+// To avoid resource dangling when multiple manifestworks apply the same resource, only one appliedmanifestwork can keep the ownership
+// to the applied resource. If the resource has been owned by an appliedmanifestwork, work agent will not apply the same manifests
+// from other manifestwork, it also returns an StatusFalse in Applied condition.
+func (m *ManifestWorkController) applyManifest(
+	manifest workapiv1.Manifest, recorder events.Recorder, appliedManifestWork *workapiv1.AppliedManifestWork) resourceapply.ApplyResult {
 	clientHolder := resourceapply.NewClientHolder().
 		WithAPIExtensionsClient(m.spokeAPIExtensionClient).
 		WithKubernetes(m.spokeKubeclient)
+	owner := metav1.NewControllerRef(appliedManifestWork, workapiv1.GroupVersion.WithKind("AppliedManifestWork"))
+	result := resourceapply.ApplyResult{}
 
-	// Using index as the file name and apply manifests
-	indexstrings := []string{}
-	for i := 0; i < len(manifests); i++ {
-		indexstrings = append(indexstrings, strconv.Itoa(i))
+	gvr, requiredObj, err := m.decodeUnstructured(manifest.Raw)
+	if err != nil {
+		result.Error = err
+		return result
 	}
+
+	// Get resource at first and compare the owner. This is to ensure that only one manifestwork can
+	// keep the ownership to the resource.
+	existingObj, err := m.spokeDynamicClient.
+		Resource(gvr).
+		Namespace(requiredObj.GetNamespace()).
+		Get(context.TODO(), requiredObj.GetName(), metav1.GetOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		result.Error = err
+		return result
+	}
+
+	controlled := m.canControlledByWork(existingObj, appliedManifestWork)
+	if !controlled {
+		result.Error = fmt.Errorf("the resource is currently being owned by another manifestwork")
+		return result
+	}
+
 	results := resourceapply.ApplyDirectly(clientHolder, recorder, func(name string) ([]byte, error) {
-		index, _ := strconv.ParseInt(name, 10, 32)
-		unstructuredObj := &unstructured.Unstructured{}
-		err := unstructuredObj.UnmarshalJSON(manifests[index].Raw)
-		if err != nil {
-			return nil, err
-		}
-		unstructuredObj.SetOwnerReferences([]metav1.OwnerReference{owner})
-		return unstructuredObj.MarshalJSON()
-	}, indexstrings...)
+		requiredObj.SetOwnerReferences([]metav1.OwnerReference{*owner})
+		return requiredObj.MarshalJSON()
+	}, "manifest")
+
+	if len(results) != 1 {
+		result.Error = fmt.Errorf("invalid result returned")
+		return result
+	}
 
 	// Try apply with dynamic client if the manifest cannot be decoded by scheme or typed client is not found
-	// TODO we should check the certain error.
-	for index, result := range results {
-		// Use dynamic client when scheme cannot decode manifest or typed client cannot handle the object
-		if isDecodeError(result.Error) || isUnhandledError(result.Error) {
-			results[index].Result, results[index].Changed, results[index].Error = m.applyUnstructrued(manifests[index].Raw, owner, recorder)
-		}
+	// Use dynamic client when scheme cannot decode manifest or typed client cannot handle the object
+	result = results[0]
+	if isDecodeError(result.Error) || isUnhandledError(result.Error) {
+		result.Result, result.Changed, result.Error = m.applyUnstructrued(
+			existingObj, requiredObj, gvr, *owner, recorder)
 	}
-	return results
+	return result
+}
+
+func (m *ManifestWorkController) canControlledByWork(obj *unstructured.Unstructured, appliedManifestWork *workapiv1.AppliedManifestWork) bool {
+	// If the resource does not exist, no one owns it.
+	if obj == nil {
+		return true
+	}
+
+	fmt.Printf("appliemanifestwork uid %v, owner %v\n", appliedManifestWork.UID, obj.GetOwnerReferences())
+	// Return true if resource has no owner.
+	if len(obj.GetOwnerReferences()) == 0 {
+		return true
+	}
+
+	return metav1.IsControlledBy(obj, appliedManifestWork)
 }
 
 func (m *ManifestWorkController) decodeUnstructured(data []byte) (schema.GroupVersionResource, *unstructured.Unstructured, error) {
@@ -227,26 +263,16 @@ func (m *ManifestWorkController) decodeUnstructured(data []byte) (schema.GroupVe
 	return mapping.Resource, unstructuredObj, nil
 }
 
-func (m *ManifestWorkController) applyUnstructrued(data []byte, owner metav1.OwnerReference, recorder events.Recorder) (*unstructured.Unstructured, bool, error) {
-	gvr, required, err := m.decodeUnstructured(data)
-	if err != nil {
-		return nil, false, err
-	}
-
-	required.SetOwnerReferences([]metav1.OwnerReference{owner})
-	existing, err := m.spokeDynamicClient.
-		Resource(gvr).
-		Namespace(required.GetNamespace()).
-		Get(context.TODO(), required.GetName(), metav1.GetOptions{})
-	if errors.IsNotFound(err) {
+func (m *ManifestWorkController) applyUnstructrued(
+	existing, required *unstructured.Unstructured,
+	gvr schema.GroupVersionResource,
+	owner metav1.OwnerReference, recorder events.Recorder) (*unstructured.Unstructured, bool, error) {
+	if existing == nil {
 		actual, err := m.spokeDynamicClient.Resource(gvr).Namespace(required.GetNamespace()).Create(
 			context.TODO(), required, metav1.CreateOptions{})
 		recorder.Eventf(fmt.Sprintf(
 			"%s Created", required.GetKind()), "Created %s/%s because it was missing", required.GetNamespace(), required.GetName())
 		return actual, true, err
-	}
-	if err != nil {
-		return nil, false, err
 	}
 
 	// Compare and update the unstrcuctured.

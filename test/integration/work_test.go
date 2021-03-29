@@ -566,9 +566,12 @@ var _ = ginkgo.Describe("ManifestWork", func() {
 		})
 
 		ginkgo.JustBeforeEach(func() {
+			// Ensure manifestwork is applied
+			util.AssertWorkCondition(work.Namespace, work.Name, hubWorkClient, string(workapiv1.WorkApplied), metav1.ConditionTrue,
+				[]metav1.ConditionStatus{metav1.ConditionTrue, metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
+			util.AssertWorkCondition(work.Namespace, work.Name, hubWorkClient, string(workapiv1.WorkAvailable), metav1.ConditionTrue,
+				[]metav1.ConditionStatus{metav1.ConditionTrue, metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
 			// Create another manifestworks with one shared resource.
-			// TODO We might not want the sharing in this cases, since the content of a resource in two manifestworks
-			// can be different.
 			anotherWork = util.NewManifestWork(o.SpokeClusterName, "sharing-resource-work", []workapiv1.Manifest{manifests[0]})
 			anotherWork, err = hubWorkClient.WorkV1().ManifestWorks(o.SpokeClusterName).Create(context.Background(), anotherWork, metav1.CreateOptions{})
 			anotherAppliedManifestWorkName = fmt.Sprintf("%s-%s", hubHash, anotherWork.Name)
@@ -576,13 +579,9 @@ var _ = ginkgo.Describe("ManifestWork", func() {
 		})
 
 		ginkgo.It("shared resource between the manifestwork should be recreated when one manifestwork is deleted", func() {
-			// Ensure two manifestworks are all applied
-			util.AssertWorkCondition(work.Namespace, work.Name, hubWorkClient, string(workapiv1.WorkApplied), metav1.ConditionTrue,
-				[]metav1.ConditionStatus{metav1.ConditionTrue, metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
-			util.AssertWorkCondition(work.Namespace, work.Name, hubWorkClient, string(workapiv1.WorkAvailable), metav1.ConditionTrue,
-				[]metav1.ConditionStatus{metav1.ConditionTrue, metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
-			util.AssertWorkCondition(anotherWork.Namespace, anotherWork.Name, hubWorkClient, string(workapiv1.WorkApplied), metav1.ConditionTrue,
-				[]metav1.ConditionStatus{metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
+			// Ensure anotherWork is not applied since it is owned by the first manifestwork already
+			util.AssertWorkCondition(anotherWork.Namespace, anotherWork.Name, hubWorkClient, string(workapiv1.WorkApplied), metav1.ConditionFalse,
+				[]metav1.ConditionStatus{metav1.ConditionFalse}, eventuallyTimeout, eventuallyInterval)
 			util.AssertWorkCondition(anotherWork.Namespace, anotherWork.Name, hubWorkClient, string(workapiv1.WorkAvailable), metav1.ConditionTrue,
 				[]metav1.ConditionStatus{metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
 
@@ -600,21 +599,6 @@ var _ = ginkgo.Describe("ManifestWork", func() {
 				}
 
 				for _, appliedResource := range appliedManifestWork.Status.AppliedResources {
-					if appliedResource.Name == "cm1" && appliedResource.UID == string(currentUID) {
-						return nil
-					}
-				}
-
-				return fmt.Errorf("Resource name or uid in appliedmanifestwork does not match")
-			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
-
-			gomega.Eventually(func() error {
-				anotherappliedmanifestwork, err := spokeWorkClient.WorkV1().AppliedManifestWorks().Get(context.Background(), anotherAppliedManifestWorkName, metav1.GetOptions{})
-				if err != nil {
-					return err
-				}
-
-				for _, appliedResource := range anotherappliedmanifestwork.Status.AppliedResources {
 					if appliedResource.Name == "cm1" && appliedResource.UID == string(currentUID) {
 						return nil
 					}
@@ -668,13 +652,9 @@ var _ = ginkgo.Describe("ManifestWork", func() {
 		})
 
 		ginkgo.It("shared resource between the manifestwork should be recreated when the shared resource is removed from one manifestwork", func() {
-			// Ensure two manifestworks are all applied
-			util.AssertWorkCondition(work.Namespace, work.Name, hubWorkClient, string(workapiv1.WorkApplied), metav1.ConditionTrue,
-				[]metav1.ConditionStatus{metav1.ConditionTrue, metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
-			util.AssertWorkCondition(work.Namespace, work.Name, hubWorkClient, string(workapiv1.WorkAvailable), metav1.ConditionTrue,
-				[]metav1.ConditionStatus{metav1.ConditionTrue, metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
-			util.AssertWorkCondition(anotherWork.Namespace, anotherWork.Name, hubWorkClient, string(workapiv1.WorkApplied), metav1.ConditionTrue,
-				[]metav1.ConditionStatus{metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
+			// Ensure anotherWork fails to apply since the resource is owned by other manifestwork
+			util.AssertWorkCondition(anotherWork.Namespace, anotherWork.Name, hubWorkClient, string(workapiv1.WorkApplied), metav1.ConditionFalse,
+				[]metav1.ConditionStatus{metav1.ConditionFalse}, eventuallyTimeout, eventuallyInterval)
 			util.AssertWorkCondition(anotherWork.Namespace, anotherWork.Name, hubWorkClient, string(workapiv1.WorkAvailable), metav1.ConditionTrue,
 				[]metav1.ConditionStatus{metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
 
@@ -692,21 +672,6 @@ var _ = ginkgo.Describe("ManifestWork", func() {
 				}
 
 				for _, appliedResource := range appliedManifestWork.Status.AppliedResources {
-					if appliedResource.Name == "cm1" && appliedResource.UID == string(currentUID) {
-						return nil
-					}
-				}
-
-				return fmt.Errorf("Resource name or uid in appliedmanifestwork does not match")
-			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
-
-			gomega.Eventually(func() error {
-				anotherAppliedManifestWork, err := spokeWorkClient.WorkV1().AppliedManifestWorks().Get(context.Background(), anotherAppliedManifestWorkName, metav1.GetOptions{})
-				if err != nil {
-					return err
-				}
-
-				for _, appliedResource := range anotherAppliedManifestWork.Status.AppliedResources {
 					if appliedResource.Name == "cm1" && appliedResource.UID == string(currentUID) {
 						return nil
 					}
