@@ -45,15 +45,16 @@ func newManifestCondition(ordinal int32, resource string, conds ...metav1.Condit
 	}
 }
 
-func newSecret(namespace, name string, terminated bool, uid string) *corev1.Secret {
+func newSecret(namespace, name string, terminated bool, uid string, owners []metav1.OwnerReference) *corev1.Secret {
 	secret := &corev1.Secret{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Secret",
 			APIVersion: "v1",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
+			Name:            name,
+			Namespace:       namespace,
+			OwnerReferences: owners,
 		},
 	}
 
@@ -328,6 +329,9 @@ func TestMergeStatusConditions(t *testing.T) {
 }
 
 func TestDeleteAppliedResourcess(t *testing.T) {
+	controller := true
+	owner := metav1.OwnerReference{UID: "1", Controller: &controller}
+	owner2 := metav1.OwnerReference{UID: "2", Controller: &controller}
 	cases := []struct {
 		name                                 string
 		existingResources                    []runtime.Object
@@ -341,10 +345,10 @@ func TestDeleteAppliedResourcess(t *testing.T) {
 			},
 		},
 		{
-			name: "skip if resource have different uid",
+			name: "skip if the resource has different uid",
 			existingResources: []runtime.Object{
-				newSecret("ns1", "n1", false, "ns1-n1-xxx"),
-				newSecret("ns2", "n2", true, "ns2-n2-xxx"),
+				newSecret("ns1", "n1", false, "ns1-n1-xxx", []metav1.OwnerReference{owner}),
+				newSecret("ns2", "n2", true, "ns2-n2-xxx", []metav1.OwnerReference{owner}),
 			},
 			resourcesToRemove: []workapiv1.AppliedManifestResourceMeta{
 				{Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1", UID: "ns1-n1"},
@@ -352,10 +356,38 @@ func TestDeleteAppliedResourcess(t *testing.T) {
 			},
 		},
 		{
+			name: "skip if the resource has different owner",
+			existingResources: []runtime.Object{
+				newSecret("ns1", "n1", false, "ns1-n1", []metav1.OwnerReference{owner2}),
+				newSecret("ns2", "n2", true, "ns2-n2", []metav1.OwnerReference{owner}),
+			},
+			resourcesToRemove: []workapiv1.AppliedManifestResourceMeta{
+				{Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1", UID: "ns1-n1"},
+				{Version: "v1", Resource: "secrets", Namespace: "ns2", Name: "n2", UID: "ns2-n2"},
+			},
+			expectedResourcesPendingFinalization: []workapiv1.AppliedManifestResourceMeta{
+				{Version: "v1", Resource: "secrets", Namespace: "ns2", Name: "n2", UID: "ns2-n2"},
+			},
+		},
+		{
+			name: "skip if the resource has multiple owners",
+			existingResources: []runtime.Object{
+				newSecret("ns1", "n1", false, "ns1-n1", []metav1.OwnerReference{owner, owner2}),
+				newSecret("ns2", "n2", true, "ns2-n2", []metav1.OwnerReference{owner}),
+			},
+			resourcesToRemove: []workapiv1.AppliedManifestResourceMeta{
+				{Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1", UID: "ns1-n1"},
+				{Version: "v1", Resource: "secrets", Namespace: "ns2", Name: "n2", UID: "ns2-n2"},
+			},
+			expectedResourcesPendingFinalization: []workapiv1.AppliedManifestResourceMeta{
+				{Version: "v1", Resource: "secrets", Namespace: "ns2", Name: "n2", UID: "ns2-n2"},
+			},
+		},
+		{
 			name: "delete resources",
 			existingResources: []runtime.Object{
-				newSecret("ns1", "n1", false, "ns1-n1"),
-				newSecret("ns2", "n2", true, "ns2-n2"),
+				newSecret("ns1", "n1", false, "ns1-n1", []metav1.OwnerReference{owner}),
+				newSecret("ns2", "n2", true, "ns2-n2", []metav1.OwnerReference{owner}),
 			},
 			resourcesToRemove: []workapiv1.AppliedManifestResourceMeta{
 				{Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1"},
@@ -373,7 +405,7 @@ func TestDeleteAppliedResourcess(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			fakeDynamicClient := fakedynamic.NewSimpleDynamicClient(scheme, c.existingResources...)
-			actual, err := DeleteAppliedResources(c.resourcesToRemove, "testing", fakeDynamicClient, eventstesting.NewTestingEventRecorder(t))
+			actual, err := DeleteAppliedResources(c.resourcesToRemove, owner, "testing", fakeDynamicClient, eventstesting.NewTestingEventRecorder(t))
 			if err != nil {
 				t.Errorf("unexpected err: %v", err)
 			}

@@ -11,6 +11,8 @@ import (
 	workinformers "github.com/open-cluster-management/api/client/work/informers/externalversions"
 	workapiv1 "github.com/open-cluster-management/api/work/v1"
 	"github.com/open-cluster-management/work/pkg/spoke/spoketesting"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	fakedynamic "k8s.io/client-go/dynamic/fake"
@@ -32,6 +34,13 @@ func newManifest(group, version, resource, namespace, name string) workapiv1.Man
 }
 
 func TestSyncManifestWork(t *testing.T) {
+	testingAppliedWork := spoketesting.NewAppliedManifestWork("test", 0)
+	owner := metav1.NewControllerRef(testingAppliedWork, workapiv1.GroupVersion.WithKind("AppliedManifestWork"))
+
+	// Create another owner for other work
+	anotherOwner := metav1.NewControllerRef(testingAppliedWork, workapiv1.GroupVersion.WithKind("AppliedManifestWork"))
+	anotherOwner.UID = "anotheruid"
+
 	cases := []struct {
 		name                               string
 		existingResources                  []runtime.Object
@@ -39,12 +48,13 @@ func TestSyncManifestWork(t *testing.T) {
 		manifests                          []workapiv1.ManifestCondition
 		validateAppliedManifestWorkActions func(t *testing.T, actions []clienttesting.Action)
 		expectedDeleteActions              []clienttesting.DeleteActionImpl
+		expectedUpdateActionFunc           func(t *testing.T, actions []clienttesting.UpdateActionImpl)
 		expectedQueueLen                   int
 	}{
 		{
 			name: "skip when no applied resource changed",
 			existingResources: []runtime.Object{
-				spoketesting.NewUnstructuredSecret("ns1", "n1", false, "ns1-n1"),
+				spoketesting.NewUnstructuredSecretWithOwner("ns1", "n1", false, "ns1-n1", []metav1.OwnerReference{*owner}),
 			},
 			appliedResources: []workapiv1.AppliedManifestResourceMeta{
 				{Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1", UID: "ns1-n1"},
@@ -60,12 +70,12 @@ func TestSyncManifestWork(t *testing.T) {
 		{
 			name: "delete untracked resources",
 			existingResources: []runtime.Object{
-				spoketesting.NewUnstructuredSecret("ns1", "n1", false, "ns1-n1"),
-				spoketesting.NewUnstructuredSecret("ns2", "n2", false, "ns2-n2"),
-				spoketesting.NewUnstructuredSecret("ns3", "n3", false, "ns3-n3"),
-				spoketesting.NewUnstructuredSecret("ns4", "n4", false, "ns4-n4"),
-				spoketesting.NewUnstructuredSecret("ns5", "n5", false, "ns5-n5"),
-				spoketesting.NewUnstructuredSecret("ns6", "n6", false, "ns6-n6"),
+				spoketesting.NewUnstructuredSecretWithOwner("ns1", "n1", false, "ns1-n1", []metav1.OwnerReference{*owner}),
+				spoketesting.NewUnstructuredSecretWithOwner("ns2", "n2", false, "ns2-n2", []metav1.OwnerReference{*owner}),
+				spoketesting.NewUnstructuredSecretWithOwner("ns3", "n3", false, "ns3-n3", []metav1.OwnerReference{*owner}),
+				spoketesting.NewUnstructuredSecretWithOwner("ns4", "n4", false, "ns4-n4", []metav1.OwnerReference{*owner}),
+				spoketesting.NewUnstructuredSecretWithOwner("ns5", "n5", false, "ns5-n5", []metav1.OwnerReference{*owner}),
+				spoketesting.NewUnstructuredSecretWithOwner("ns6", "n6", false, "ns6-n6", []metav1.OwnerReference{*owner}),
 			},
 			appliedResources: []workapiv1.AppliedManifestResourceMeta{
 				{Group: "", Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1", UID: "ns1-n1"},
@@ -103,9 +113,9 @@ func TestSyncManifestWork(t *testing.T) {
 		{
 			name: "requeue work when applied resource for stale manifest is deleting",
 			existingResources: []runtime.Object{
-				spoketesting.NewUnstructuredSecret("ns1", "n1", false, "ns1-n1"),
-				spoketesting.NewUnstructuredSecret("ns2", "n2", false, "ns2-n2"),
-				spoketesting.NewUnstructuredSecret("ns3", "n3", true, "ns3-n3"),
+				spoketesting.NewUnstructuredSecretWithOwner("ns1", "n1", false, "ns1-n1", []metav1.OwnerReference{*owner}),
+				spoketesting.NewUnstructuredSecretWithOwner("ns2", "n2", false, "ns2-n2", []metav1.OwnerReference{*owner}),
+				spoketesting.NewUnstructuredSecretWithOwner("ns3", "n3", true, "ns3-n3", []metav1.OwnerReference{*owner}),
 			},
 			appliedResources: []workapiv1.AppliedManifestResourceMeta{
 				{Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1", UID: "ns1-n1"},
@@ -127,9 +137,9 @@ func TestSyncManifestWork(t *testing.T) {
 		{
 			name: "ignore re-created resource",
 			existingResources: []runtime.Object{
-				spoketesting.NewUnstructuredSecret("ns3", "n3", false, "ns3-n3-recreated"),
-				spoketesting.NewUnstructuredSecret("ns1", "n1", false, "ns1-n1"),
-				spoketesting.NewUnstructuredSecret("ns5", "n5", false, "ns5-n5"),
+				spoketesting.NewUnstructuredSecretWithOwner("ns3", "n3", false, "ns3-n3-recreated", []metav1.OwnerReference{*owner}),
+				spoketesting.NewUnstructuredSecretWithOwner("ns1", "n1", false, "ns1-n1", []metav1.OwnerReference{*owner}),
+				spoketesting.NewUnstructuredSecretWithOwner("ns5", "n5", false, "ns5-n5", []metav1.OwnerReference{*owner}),
 			},
 			appliedResources: []workapiv1.AppliedManifestResourceMeta{
 				{Version: "v1", Resource: "secrets", Namespace: "ns3", Name: "n3", UID: "ns3-n3"},
@@ -156,8 +166,8 @@ func TestSyncManifestWork(t *testing.T) {
 		{
 			name: "update resource uid",
 			existingResources: []runtime.Object{
-				spoketesting.NewUnstructuredSecret("ns1", "n1", false, "ns1-n1"),
-				spoketesting.NewUnstructuredSecret("ns2", "n2", false, "ns2-n2-updated"),
+				spoketesting.NewUnstructuredSecretWithOwner("ns1", "n1", false, "ns1-n1", []metav1.OwnerReference{*owner}),
+				spoketesting.NewUnstructuredSecretWithOwner("ns2", "n2", false, "ns2-n2-updated", []metav1.OwnerReference{*owner}),
 			},
 			appliedResources: []workapiv1.AppliedManifestResourceMeta{
 				{Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1", UID: "ns1-n1"},
@@ -180,6 +190,43 @@ func TestSyncManifestWork(t *testing.T) {
 				}
 			},
 			expectedDeleteActions: []clienttesting.DeleteActionImpl{},
+		},
+		{
+			name: "remove owner only when resource is removed frome appiedmanifestwork",
+			existingResources: []runtime.Object{
+				spoketesting.NewUnstructuredSecretWithOwner("ns1", "n1", false, "ns1-n1", []metav1.OwnerReference{*owner, *anotherOwner}),
+				spoketesting.NewUnstructuredSecretWithOwner("ns2", "n2", false, "ns2-n2", []metav1.OwnerReference{*owner}),
+			},
+			appliedResources: []workapiv1.AppliedManifestResourceMeta{
+				{Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1", UID: "ns1-n1"},
+				{Version: "v1", Resource: "secrets", Namespace: "ns2", Name: "n2", UID: "ns2-n2"},
+			},
+			manifests: []workapiv1.ManifestCondition{
+				newManifest("", "v1", "secrets", "ns2", "n2"),
+			},
+			validateAppliedManifestWorkActions: func(t *testing.T, actions []clienttesting.Action) {
+				if len(actions) != 1 {
+					t.Fatal(spew.Sdump(actions))
+				}
+				work := actions[0].(clienttesting.UpdateAction).GetObject().(*workapiv1.AppliedManifestWork)
+				if !reflect.DeepEqual(work.Status.AppliedResources, []workapiv1.AppliedManifestResourceMeta{
+					{Version: "v1", Resource: "secrets", Namespace: "ns2", Name: "n2", UID: "ns2-n2"},
+				}) {
+					t.Fatal(spew.Sdump(actions))
+				}
+			},
+			expectedDeleteActions: []clienttesting.DeleteActionImpl{},
+			expectedUpdateActionFunc: func(t *testing.T, actions []clienttesting.UpdateActionImpl) {
+				if len(actions) != 1 {
+					t.Fatal(spew.Sdump(actions))
+				}
+
+				obj := actions[0].Object
+				accessor, _ := meta.Accessor(obj)
+				if len(accessor.GetOwnerReferences()) != 1 {
+					t.Fatal(spew.Sdump(actions))
+				}
+			},
 		},
 	}
 
@@ -220,6 +267,16 @@ func TestSyncManifestWork(t *testing.T) {
 			}
 			if !reflect.DeepEqual(c.expectedDeleteActions, deleteActions) {
 				t.Fatal(spew.Sdump(deleteActions))
+			}
+
+			updateActions := []clienttesting.UpdateActionImpl{}
+			for _, action := range fakeDynamicClient.Actions() {
+				if action.GetVerb() == "update" {
+					updateActions = append(updateActions, action.(clienttesting.UpdateActionImpl))
+				}
+			}
+			if c.expectedUpdateActionFunc != nil {
+				c.expectedUpdateActionFunc(t, updateActions)
 			}
 
 			queueLen := controllerContext.Queue().Len()

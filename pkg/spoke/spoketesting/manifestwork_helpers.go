@@ -45,6 +45,7 @@ func NewSecret(name, namespace string, content string) *corev1.Secret {
 			Name:      name,
 			Namespace: namespace,
 		},
+		Type: corev1.SecretTypeOpaque,
 		Data: map[string][]byte{
 			"test": []byte(content),
 		},
@@ -60,6 +61,12 @@ func NewUnstructuredSecret(namespace, name string, terminated bool, uid string) 
 	if uid != "" {
 		u.SetUID(types.UID(uid))
 	}
+	return u
+}
+
+func NewUnstructuredSecretWithOwner(namespace, name string, terminated bool, uid string, owners []metav1.OwnerReference) *unstructured.Unstructured {
+	u := NewUnstructuredSecret(namespace, name, terminated, uid)
+	u.SetOwnerReferences(owners)
 	return u
 }
 
@@ -114,6 +121,7 @@ func NewAppliedManifestWork(hash string, index int) *workapiv1.AppliedManifestWo
 	return &workapiv1.AppliedManifestWork{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: fmt.Sprintf("%s-%s", hash, workName),
+			UID:  types.UID(fmt.Sprintf("%d", index)),
 		},
 		Spec: workapiv1.AppliedManifestWorkSpec{
 			HubHash:          hash,

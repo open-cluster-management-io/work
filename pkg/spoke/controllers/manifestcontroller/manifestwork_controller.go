@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openshift/library-go/pkg/operator/resource/resourcemerge"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -188,7 +189,7 @@ func (m *ManifestWorkController) applyManifest(
 	clientHolder := resourceapply.NewClientHolder().
 		WithAPIExtensionsClient(m.spokeAPIExtensionClient).
 		WithKubernetes(m.spokeKubeclient)
-	owner := metav1.NewControllerRef(appliedManifestWork, workapiv1.GroupVersion.WithKind("AppliedManifestWork"))
+	owner := helper.NewOwnerRef(appliedManifestWork, workapiv1.GroupVersion.WithKind("AppliedManifestWork"))
 	result := resourceapply.ApplyResult{}
 
 	gvr, requiredObj, err := m.decodeUnstructured(manifest.Raw)
@@ -203,19 +204,20 @@ func (m *ManifestWorkController) applyManifest(
 		Resource(gvr).
 		Namespace(requiredObj.GetNamespace()).
 		Get(context.TODO(), requiredObj.GetName(), metav1.GetOptions{})
-	if err != nil && !errors.IsNotFound(err) {
+
+	switch {
+	case errors.IsNotFound(err):
+		break
+	case err != nil:
 		result.Error = err
 		return result
+	default:
+		requiredObj.SetOwnerReferences(existingObj.GetOwnerReferences())
 	}
 
-	controlled := m.canControlledByWork(existingObj, appliedManifestWork)
-	if !controlled {
-		result.Error = fmt.Errorf("the resource is currently being owned by another manifestwork")
-		return result
-	}
-
+	helper.AddOwners(requiredObj, *owner)
+	resourcemerge.EnsureObjectMeta = EnsureObjectMetaWithOwner
 	results := resourceapply.ApplyDirectly(clientHolder, recorder, func(name string) ([]byte, error) {
-		requiredObj.SetOwnerReferences([]metav1.OwnerReference{*owner})
 		return requiredObj.MarshalJSON()
 	}, "manifest")
 
@@ -229,24 +231,9 @@ func (m *ManifestWorkController) applyManifest(
 	result = results[0]
 	if isDecodeError(result.Error) || isUnhandledError(result.Error) {
 		result.Result, result.Changed, result.Error = m.applyUnstructrued(
-			existingObj, requiredObj, gvr, *owner, recorder)
+			existingObj, requiredObj, gvr, recorder)
 	}
 	return result
-}
-
-func (m *ManifestWorkController) canControlledByWork(obj *unstructured.Unstructured, appliedManifestWork *workapiv1.AppliedManifestWork) bool {
-	// If the resource does not exist, no one owns it.
-	if obj == nil {
-		return true
-	}
-
-	fmt.Printf("appliemanifestwork uid %v, owner %v\n", appliedManifestWork.UID, obj.GetOwnerReferences())
-	// Return true if resource has no owner.
-	if len(obj.GetOwnerReferences()) == 0 {
-		return true
-	}
-
-	return metav1.IsControlledBy(obj, appliedManifestWork)
 }
 
 func (m *ManifestWorkController) decodeUnstructured(data []byte) (schema.GroupVersionResource, *unstructured.Unstructured, error) {
@@ -266,7 +253,7 @@ func (m *ManifestWorkController) decodeUnstructured(data []byte) (schema.GroupVe
 func (m *ManifestWorkController) applyUnstructrued(
 	existing, required *unstructured.Unstructured,
 	gvr schema.GroupVersionResource,
-	owner metav1.OwnerReference, recorder events.Recorder) (*unstructured.Unstructured, bool, error) {
+	recorder events.Recorder) (*unstructured.Unstructured, bool, error) {
 	if existing == nil {
 		actual, err := m.spokeDynamicClient.Resource(gvr).Namespace(required.GetNamespace()).Create(
 			context.TODO(), required, metav1.CreateOptions{})
@@ -355,6 +342,9 @@ func isSameUnstructured(obj1, obj2 *unstructured.Unstructured) bool {
 		return false
 	}
 	if !equality.Semantic.DeepEqual(obj1Copy.GetAnnotations(), obj2Copy.GetAnnotations()) {
+		return false
+	}
+	if !equality.Semantic.DeepEqual(obj1Copy.GetOwnerReferences(), obj2Copy.GetOwnerReferences()) {
 		return false
 	}
 
@@ -473,4 +463,28 @@ func buildResourceMeta(index int, object runtime.Object, restMapper meta.RESTMap
 
 	resourceMeta.Resource = mapping.Resource.Resource
 	return resourceMeta, err
+}
+
+func EnsureObjectMetaWithOwner(modified *bool, existing *metav1.ObjectMeta, required metav1.ObjectMeta) {
+	resourcemerge.EnsureObjectMetaDefaul(modified, existing, required)
+	if existing.OwnerReferences == nil {
+		existing.OwnerReferences = required.OwnerReferences
+		*modified = true
+		return
+	}
+
+	for _, o := range required.OwnerReferences {
+		found := false
+		for _, o1 := range existing.OwnerReferences {
+			if o.UID == o1.UID {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			existing.OwnerReferences = append(existing.OwnerReferences, o)
+			*modified = true
+		}
+	}
 }

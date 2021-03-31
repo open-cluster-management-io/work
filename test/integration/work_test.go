@@ -578,10 +578,10 @@ var _ = ginkgo.Describe("ManifestWork", func() {
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 		})
 
-		ginkgo.It("shared resource between the manifestwork should be recreated when one manifestwork is deleted", func() {
+		ginkgo.It("shared resource between the manifestwork should be kept when one manifestwork is deleted", func() {
 			// Ensure anotherWork is not applied since it is owned by the first manifestwork already
-			util.AssertWorkCondition(anotherWork.Namespace, anotherWork.Name, hubWorkClient, string(workapiv1.WorkApplied), metav1.ConditionFalse,
-				[]metav1.ConditionStatus{metav1.ConditionFalse}, eventuallyTimeout, eventuallyInterval)
+			util.AssertWorkCondition(anotherWork.Namespace, anotherWork.Name, hubWorkClient, string(workapiv1.WorkApplied), metav1.ConditionTrue,
+				[]metav1.ConditionStatus{metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
 			util.AssertWorkCondition(anotherWork.Namespace, anotherWork.Name, hubWorkClient, string(workapiv1.WorkAvailable), metav1.ConditionTrue,
 				[]metav1.ConditionStatus{metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
 
@@ -606,20 +606,43 @@ var _ = ginkgo.Describe("ManifestWork", func() {
 
 				return fmt.Errorf("Resource name or uid in appliedmanifestwork does not match")
 			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
+			gomega.Eventually(func() error {
+				anotherAppliedManifestWork, err := spokeWorkClient.WorkV1().AppliedManifestWorks().Get(context.Background(), anotherAppliedManifestWorkName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+
+				for _, appliedResource := range anotherAppliedManifestWork.Status.AppliedResources {
+					if appliedResource.Name == "cm1" && appliedResource.UID == string(currentUID) {
+						return nil
+					}
+				}
+
+				return fmt.Errorf("Resource name or uid in appliedmanifestwork does not match")
+			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
 
 			// Delete one manifestwork
 			err = hubWorkClient.WorkV1().ManifestWorks(o.SpokeClusterName).Delete(context.Background(), work.Name, metav1.DeleteOptions{})
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
-			// Ensure the configmap is recreated and tracked by anotherappliedmanifestwork.
+			// Ensure the appliedmanifestwork of deleted manifestwork is removed so it won't try to delete shared resource
+			gomega.Eventually(func() bool {
+				_, err := spokeWorkClient.WorkV1().AppliedManifestWorks().Get(context.Background(), appliedManifestWorkName, metav1.GetOptions{})
+				if errors.IsNotFound(err) {
+					return true
+				}
+				return false
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+
+			// Ensure the configmap is kept and tracked by anotherappliedmanifestwork.
 			gomega.Eventually(func() error {
-				recreatedConfigMap, err := spokeKubeClient.CoreV1().ConfigMaps(o.SpokeClusterName).Get(context.Background(), "cm1", metav1.GetOptions{})
+				configMap, err := spokeKubeClient.CoreV1().ConfigMaps(o.SpokeClusterName).Get(context.Background(), "cm1", metav1.GetOptions{})
 				if err != nil {
 					return err
 				}
 
-				if currentUID == recreatedConfigMap.UID {
-					return fmt.Errorf("UID should not be equal")
+				if currentUID != configMap.UID {
+					return fmt.Errorf("UID should be equal")
 				}
 
 				anotherappliedmanifestwork, err := spokeWorkClient.WorkV1().AppliedManifestWorks().Get(context.Background(), anotherAppliedManifestWorkName, metav1.GetOptions{})
@@ -632,29 +655,19 @@ var _ = ginkgo.Describe("ManifestWork", func() {
 						return fmt.Errorf("Resource Name should be cm1")
 					}
 
-					if appliedResource.UID == string(currentUID) {
-						return fmt.Errorf("UID should not be equal")
+					if appliedResource.UID != string(currentUID) {
+						return fmt.Errorf("UID should be equal")
 					}
 				}
 
 				return nil
 			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
-
-			// Ensure the appliedmanifestwork of deleted manifestwork is removed so it won't try to delete shared resource
-			gomega.Eventually(func() bool {
-				_, err := spokeWorkClient.WorkV1().AppliedManifestWorks().Get(context.Background(), appliedManifestWorkName, metav1.GetOptions{})
-				if errors.IsNotFound(err) {
-					return true
-				}
-				return false
-			}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
-
 		})
 
-		ginkgo.It("shared resource between the manifestwork should be recreated when the shared resource is removed from one manifestwork", func() {
+		ginkgo.It("shared resource between the manifestwork should be kept when the shared resource is removed from one manifestwork", func() {
 			// Ensure anotherWork fails to apply since the resource is owned by other manifestwork
-			util.AssertWorkCondition(anotherWork.Namespace, anotherWork.Name, hubWorkClient, string(workapiv1.WorkApplied), metav1.ConditionFalse,
-				[]metav1.ConditionStatus{metav1.ConditionFalse}, eventuallyTimeout, eventuallyInterval)
+			util.AssertWorkCondition(anotherWork.Namespace, anotherWork.Name, hubWorkClient, string(workapiv1.WorkApplied), metav1.ConditionTrue,
+				[]metav1.ConditionStatus{metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
 			util.AssertWorkCondition(anotherWork.Namespace, anotherWork.Name, hubWorkClient, string(workapiv1.WorkAvailable), metav1.ConditionTrue,
 				[]metav1.ConditionStatus{metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
 
@@ -672,6 +685,20 @@ var _ = ginkgo.Describe("ManifestWork", func() {
 				}
 
 				for _, appliedResource := range appliedManifestWork.Status.AppliedResources {
+					if appliedResource.Name == "cm1" && appliedResource.UID == string(currentUID) {
+						return nil
+					}
+				}
+
+				return fmt.Errorf("Resource name or uid in appliedmanifestwork does not match")
+			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
+			gomega.Eventually(func() error {
+				anotherAppliedManifestWork, err := spokeWorkClient.WorkV1().AppliedManifestWorks().Get(context.Background(), anotherAppliedManifestWorkName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+
+				for _, appliedResource := range anotherAppliedManifestWork.Status.AppliedResources {
 					if appliedResource.Name == "cm1" && appliedResource.UID == string(currentUID) {
 						return nil
 					}
@@ -686,35 +713,6 @@ var _ = ginkgo.Describe("ManifestWork", func() {
 			work.Spec.Workload.Manifests = []workapiv1.Manifest{manifests[1]}
 			_, err = hubWorkClient.WorkV1().ManifestWorks(o.SpokeClusterName).Update(context.Background(), work, metav1.UpdateOptions{})
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
-
-			// Ensure the configmap is recreated and tracked by anotherappliedmanifestwork
-			gomega.Eventually(func() error {
-				recreatedConfigMap, err := spokeKubeClient.CoreV1().ConfigMaps(o.SpokeClusterName).Get(context.Background(), "cm1", metav1.GetOptions{})
-				if err != nil {
-					return err
-				}
-
-				if currentUID == recreatedConfigMap.UID {
-					return fmt.Errorf("UID should not be equal")
-				}
-
-				anotherAppliedManifestWork, err := spokeWorkClient.WorkV1().AppliedManifestWorks().Get(context.Background(), anotherAppliedManifestWorkName, metav1.GetOptions{})
-				if err != nil {
-					return err
-				}
-
-				for _, appliedResource := range anotherAppliedManifestWork.Status.AppliedResources {
-					if appliedResource.Name != "cm1" {
-						return fmt.Errorf("Resource Name should be cm1")
-					}
-
-					if appliedResource.UID == string(currentUID) {
-						return fmt.Errorf("UID should not be equal")
-					}
-				}
-
-				return nil
-			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
 
 			// ensure the resource is not tracked by the appliedmanifestwork.
 			gomega.Eventually(func() bool {
@@ -731,6 +729,35 @@ var _ = ginkgo.Describe("ManifestWork", func() {
 
 				return true
 			}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+
+			// Ensure the configmap is kept and tracked by anotherappliedmanifestwork
+			gomega.Eventually(func() error {
+				configMap, err := spokeKubeClient.CoreV1().ConfigMaps(o.SpokeClusterName).Get(context.Background(), "cm1", metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+
+				if currentUID != configMap.UID {
+					return fmt.Errorf("UID should be equal")
+				}
+
+				anotherAppliedManifestWork, err := spokeWorkClient.WorkV1().AppliedManifestWorks().Get(context.Background(), anotherAppliedManifestWorkName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+
+				for _, appliedResource := range anotherAppliedManifestWork.Status.AppliedResources {
+					if appliedResource.Name != "cm1" {
+						return fmt.Errorf("Resource Name should be cm1")
+					}
+
+					if appliedResource.UID != string(currentUID) {
+						return fmt.Errorf("UID should be equal")
+					}
+				}
+
+				return nil
+			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
 		})
 	})
 })

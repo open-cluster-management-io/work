@@ -11,6 +11,7 @@ import (
 	workapiv1 "github.com/open-cluster-management/api/work/v1"
 	"github.com/open-cluster-management/work/pkg/spoke/controllers"
 	"github.com/open-cluster-management/work/pkg/spoke/spoketesting"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -20,6 +21,13 @@ import (
 )
 
 func TestFinalize(t *testing.T) {
+	testingWork := spoketesting.NewAppliedManifestWork("test", 0)
+	owner := metav1.NewControllerRef(testingWork, workapiv1.GroupVersion.WithKind("AppliedManifestWork"))
+
+	// Create another owner for other work
+	anotherOwner := metav1.NewControllerRef(testingWork, workapiv1.GroupVersion.WithKind("AppliedManifestWork"))
+	anotherOwner.UID = "anotheruid"
+
 	cases := []struct {
 		name                               string
 		existingFinalizers                 []string
@@ -99,8 +107,8 @@ func TestFinalize(t *testing.T) {
 			terminated:         true,
 			existingFinalizers: []string{controllers.AppliedManifestWorkFinalizer},
 			existingResources: []runtime.Object{
-				spoketesting.NewUnstructuredSecret("ns1", "n1", true, "ns1-n1"),
-				spoketesting.NewUnstructuredSecret("ns2", "n2", true, "ns2-n2"),
+				spoketesting.NewUnstructuredSecretWithOwner("ns1", "n1", true, "ns1-n1", []metav1.OwnerReference{*owner}),
+				spoketesting.NewUnstructuredSecretWithOwner("ns2", "n2", true, "ns2-n2", []metav1.OwnerReference{*owner}),
 			},
 			resourcesToRemove: []workapiv1.AppliedManifestResourceMeta{
 				{Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1", UID: "ns1-n1"},
@@ -130,7 +138,7 @@ func TestFinalize(t *testing.T) {
 			terminated:         true,
 			existingFinalizers: []string{controllers.AppliedManifestWorkFinalizer},
 			existingResources: []runtime.Object{
-				spoketesting.NewUnstructuredSecret("ns1", "n1", false, "ns1-n1"),
+				spoketesting.NewUnstructuredSecretWithOwner("ns1", "n1", false, "ns1-n1", []metav1.OwnerReference{*anotherOwner}),
 			},
 			resourcesToRemove: []workapiv1.AppliedManifestResourceMeta{
 				{Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1", UID: "n1"},
@@ -169,16 +177,60 @@ func TestFinalize(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:               "remove owner of resource with multiple owners and remove finalizer",
+			terminated:         true,
+			existingFinalizers: []string{controllers.AppliedManifestWorkFinalizer},
+			existingResources: []runtime.Object{
+				spoketesting.NewUnstructuredSecretWithOwner("ns1", "n1", false, "n1", []metav1.OwnerReference{*owner, *anotherOwner}),
+			},
+			resourcesToRemove: []workapiv1.AppliedManifestResourceMeta{
+				{Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1", UID: "n1"},
+			},
+			validateAppliedManifestWorkActions: func(t *testing.T, actions []clienttesting.Action) {
+				if len(actions) != 2 {
+					t.Fatal(spew.Sdump(actions))
+				}
+
+				work := actions[0].(clienttesting.UpdateAction).GetObject().(*workapiv1.AppliedManifestWork)
+				if len(work.Status.AppliedResources) != 0 {
+					t.Fatal(spew.Sdump(actions[0]))
+				}
+
+				work = actions[1].(clienttesting.UpdateAction).GetObject().(*workapiv1.AppliedManifestWork)
+				if !reflect.DeepEqual(work.Finalizers, []string{}) {
+					t.Fatal(spew.Sdump(actions[0]))
+				}
+			},
+			validateDynamicActions: func(t *testing.T, actions []clienttesting.Action) {
+				if len(actions) != 2 {
+					t.Fatal(spew.Sdump(actions))
+				}
+
+				action := actions[0].(clienttesting.GetAction)
+				resource, namespace, name := action.GetResource(), action.GetNamespace(), action.GetName()
+				if !reflect.DeepEqual(resource, schema.GroupVersionResource{Version: "v1", Resource: "secrets"}) || namespace != "ns1" || name != "n1" {
+					t.Fatal(spew.Sdump(actions[0]))
+				}
+
+				updateAction := actions[1].(clienttesting.UpdateActionImpl)
+				obj := updateAction.Object
+				accessor, _ := meta.Accessor(obj)
+				if len(accessor.GetOwnerReferences()) != 1 {
+					t.Fatal(spew.Sdump(actions))
+				}
+			},
+		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			testingWork := spoketesting.NewAppliedManifestWork("test", 0)
 			testingWork.Finalizers = c.existingFinalizers
 			if c.terminated {
 				now := metav1.Now()
 				testingWork.DeletionTimestamp = &now
 			}
+			testingWork.Status.AppliedResources = []workapiv1.AppliedManifestResourceMeta{}
 			for _, curr := range c.resourcesToRemove {
 				testingWork.Status.AppliedResources = append(testingWork.Status.AppliedResources, curr)
 			}
@@ -203,6 +255,9 @@ func TestFinalize(t *testing.T) {
 			if queueLen != c.expectedQueueLen {
 				t.Errorf("expected %d, but %d", c.expectedQueueLen, queueLen)
 			}
+
+			fakeClient.ClearActions()
+			fakeDynamicClient.ClearActions()
 		})
 	}
 }
