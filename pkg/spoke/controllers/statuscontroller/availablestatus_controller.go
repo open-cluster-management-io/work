@@ -3,14 +3,15 @@ package statuscontroller
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"time"
 
 	"github.com/openshift/library-go/pkg/controller/factory"
 	"github.com/openshift/library-go/pkg/operator/events"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -22,16 +23,15 @@ import (
 	worklister "open-cluster-management.io/api/client/work/listers/work/v1"
 	workapiv1 "open-cluster-management.io/api/work/v1"
 	"open-cluster-management.io/work/pkg/helper"
+	"open-cluster-management.io/work/pkg/spoke/statusfeedback"
 )
-
-// ControllerSyncInterval is exposed so that integration tests can crank up the controller resync speed.
-var ControllerReSyncInterval = 30 * time.Second
 
 // AvailableStatusController is to update the available status conditions of both manifests and manifestworks.
 type AvailableStatusController struct {
 	manifestWorkClient workv1client.ManifestWorkInterface
 	manifestWorkLister worklister.ManifestWorkNamespaceLister
 	spokeDynamicClient dynamic.Interface
+	statusReader       *statusfeedback.StatusReader
 }
 
 // NewAvailableStatusController returns a AvailableStatusController
@@ -41,11 +41,13 @@ func NewAvailableStatusController(
 	manifestWorkClient workv1client.ManifestWorkInterface,
 	manifestWorkInformer workinformer.ManifestWorkInformer,
 	manifestWorkLister worklister.ManifestWorkNamespaceLister,
+	syncInterval time.Duration,
 ) factory.Controller {
 	controller := &AvailableStatusController{
 		manifestWorkClient: manifestWorkClient,
 		manifestWorkLister: manifestWorkLister,
 		spokeDynamicClient: spokeDynamicClient,
+		statusReader:       &statusfeedback.StatusReader{},
 	}
 
 	return factory.New().
@@ -53,7 +55,7 @@ func NewAvailableStatusController(
 			accessor, _ := meta.Accessor(obj)
 			return accessor.GetName()
 		}, manifestWorkInformer.Informer()).
-		WithSync(controller.sync).ResyncEvery(ControllerReSyncInterval).ToController("AvailableStatusController", recorder)
+		WithSync(controller.sync).ResyncEvery(syncInterval).ToController("AvailableStatusController", recorder)
 }
 
 func (c *AvailableStatusController) sync(ctx context.Context, controllerContext factory.SyncContext) error {
@@ -103,10 +105,21 @@ func (c *AvailableStatusController) syncManifestWork(ctx context.Context, origin
 	needStatusUpdate := false
 	// handle status condition of manifests
 	for index, manifest := range manifestWork.Status.ResourceStatus.Manifests {
-		availableStatusCondition := buildAvailableStatusCondition(manifest.ResourceMeta, c.spokeDynamicClient)
+		obj, availableStatusCondition := buildAvailableStatusCondition(manifest.ResourceMeta, c.spokeDynamicClient)
 		newConditions := helper.MergeStatusConditions(manifest.Conditions, []metav1.Condition{availableStatusCondition})
-		if !reflect.DeepEqual(manifestWork.Status.ResourceStatus.Manifests[index].Conditions, newConditions) {
+		if !equality.Semantic.DeepEqual(manifestWork.Status.ResourceStatus.Manifests[index].Conditions, newConditions) {
 			manifestWork.Status.ResourceStatus.Manifests[index].Conditions = newConditions
+			needStatusUpdate = true
+		}
+
+		values, err := c.getFeedbackValues(manifest.ResourceMeta, obj, manifestWork.Spec.ManifestConfigs)
+		if err != nil {
+			//TODO Update condition heres
+			klog.Errorf("Some values cannot be obtained %v", err)
+		}
+
+		if !equality.Semantic.DeepEqual(manifestWork.Status.ResourceStatus.Manifests[index].StatusFeedbacks.Values, values) {
+			manifestWork.Status.ResourceStatus.Manifests[index].StatusFeedbacks.Values = values
 			needStatusUpdate = true
 		}
 	}
@@ -129,7 +142,7 @@ func (c *AvailableStatusController) syncManifestWork(ctx context.Context, origin
 	manifestWork.Status.Conditions = workStatusConditions
 
 	// no work if the status of manifestwork does not change
-	if !needStatusUpdate && reflect.DeepEqual(originalManifestWork.Status.Conditions, manifestWork.Status.Conditions) {
+	if !needStatusUpdate && equality.Semantic.DeepEqual(originalManifestWork.Status.Conditions, manifestWork.Status.Conditions) {
 		return nil
 	}
 
@@ -187,12 +200,42 @@ func aggregateManifestConditions(generation int64, manifests []workapiv1.Manifes
 	}
 }
 
+func (c *AvailableStatusController) getFeedbackValues(
+	resourceMeta workapiv1.ManifestResourceMeta, obj *unstructured.Unstructured, manifestOptions []workapiv1.ManifestConfigOption) ([]workapiv1.FeedbackValue, error) {
+	errs := []error{}
+	values := []workapiv1.FeedbackValue{}
+	identifier := workapiv1.ResourceIdentifier{
+		Group:     resourceMeta.Group,
+		Resource:  resourceMeta.Resource,
+		Namespace: resourceMeta.Namespace,
+		Name:      resourceMeta.Name,
+	}
+
+	for _, field := range manifestOptions {
+		if field.ResourceIdentifier != identifier {
+			continue
+		}
+
+		for _, rule := range field.FeedbackRules {
+			valuesByRule, err := c.statusReader.GetValuesByRule(obj, rule)
+			if err != nil {
+				errs = append(errs, err)
+			}
+			if len(values) > 0 {
+				values = append(values, valuesByRule...)
+			}
+		}
+	}
+
+	return values, utilerrors.NewAggregate(errs)
+}
+
 // buildAvailableStatusCondition returns a StatusCondition with type Available for a given manifest resource
-func buildAvailableStatusCondition(resourceMeta workapiv1.ManifestResourceMeta, dynamicClient dynamic.Interface) metav1.Condition {
+func buildAvailableStatusCondition(resourceMeta workapiv1.ManifestResourceMeta, dynamicClient dynamic.Interface) (*unstructured.Unstructured, metav1.Condition) {
 	conditionType := string(workapiv1.ManifestAvailable)
 
 	if len(resourceMeta.Resource) == 0 || len(resourceMeta.Version) == 0 || len(resourceMeta.Name) == 0 {
-		return metav1.Condition{
+		return nil, metav1.Condition{
 			Type:    conditionType,
 			Status:  metav1.ConditionUnknown,
 			Reason:  "IncompletedResourceMeta",
@@ -200,13 +243,13 @@ func buildAvailableStatusCondition(resourceMeta workapiv1.ManifestResourceMeta, 
 		}
 	}
 
-	available, err := isResourceAvailable(resourceMeta.Namespace, resourceMeta.Name, schema.GroupVersionResource{
+	obj, available, err := isResourceAvailable(resourceMeta.Namespace, resourceMeta.Name, schema.GroupVersionResource{
 		Group:    resourceMeta.Group,
 		Version:  resourceMeta.Version,
 		Resource: resourceMeta.Resource,
 	}, dynamicClient)
 	if err != nil {
-		return metav1.Condition{
+		return nil, metav1.Condition{
 			Type:    conditionType,
 			Status:  metav1.ConditionUnknown,
 			Reason:  "FetchingResourceFailed",
@@ -214,31 +257,31 @@ func buildAvailableStatusCondition(resourceMeta workapiv1.ManifestResourceMeta, 
 		}
 	}
 
-	if available {
-		return metav1.Condition{
+	if !available {
+		return nil, metav1.Condition{
 			Type:    conditionType,
-			Status:  metav1.ConditionTrue,
-			Reason:  "ResourceAvailable",
-			Message: "Resource is available",
+			Status:  metav1.ConditionFalse,
+			Reason:  "ResourceNotAvailable",
+			Message: "Resource is not available",
 		}
 	}
 
-	return metav1.Condition{
+	return obj, metav1.Condition{
 		Type:    conditionType,
-		Status:  metav1.ConditionFalse,
-		Reason:  "ResourceNotAvailable",
-		Message: "Resource is not available",
+		Status:  metav1.ConditionTrue,
+		Reason:  "ResourceAvailable",
+		Message: "Resource is available",
 	}
 }
 
 // isResourceAvailable checks if the specific resource is available or not
-func isResourceAvailable(namespace, name string, gvr schema.GroupVersionResource, dynamicClient dynamic.Interface) (bool, error) {
-	_, err := dynamicClient.Resource(gvr).Namespace(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+func isResourceAvailable(namespace, name string, gvr schema.GroupVersionResource, dynamicClient dynamic.Interface) (*unstructured.Unstructured, bool, error) {
+	obj, err := dynamicClient.Resource(gvr).Namespace(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	if errors.IsNotFound(err) {
-		return false, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
-	return true, nil
+	return obj, true, nil
 }

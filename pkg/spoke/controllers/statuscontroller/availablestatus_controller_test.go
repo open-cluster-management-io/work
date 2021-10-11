@@ -89,7 +89,7 @@ func TestSyncManifestWork(t *testing.T) {
 			},
 		},
 		{
-			name: "build status when one of resources doess not exists",
+			name: "build status when one of resources does not exists",
 			existingResources: []runtime.Object{
 				spoketesting.NewUnstructuredSecret("ns1", "n1", false, "ns1-n1"),
 			},
