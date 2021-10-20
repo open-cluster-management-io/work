@@ -194,6 +194,7 @@ func DeleteAppliedResources(
 	reason string,
 	dynamicClient dynamic.Interface,
 	recorder events.Recorder,
+	hubHash string,
 	owner metav1.OwnerReference) ([]workapiv1.AppliedManifestResourceMeta, []error) {
 	var resourcesPendingFinalization []workapiv1.AppliedManifestResourceMeta
 	var errs []error
@@ -231,8 +232,10 @@ func DeleteAppliedResources(
 		modified := resourcemerge.BoolPtr(false)
 		resourcemerge.MergeOwnerRefs(modified, &existingOwner, []metav1.OwnerReference{*ownerCopy})
 
-		// If there are still any other existing owners (not only ManifestWorks), update ownerrefs only.
-		if len(existingOwner) > 0 {
+		// If there are still any other existing owners from the hub the work agent connects or
+		// a local owner on spoke, update ownerrefs only.
+		// If the owner is from another hub, delete the resource anyway.
+		if isOwnedByHubOrLocal(existingOwner, hubHash) {
 			if !*modified {
 				continue
 			}
@@ -287,6 +290,28 @@ func DeleteAppliedResources(
 	}
 
 	return resourcesPendingFinalization, errs
+}
+
+// isOwnedByHub checks if there exists a owner relates to the hub this work agent connects to,
+// or owned by a local controller on the spoke
+func isOwnedByHubOrLocal(owners []metav1.OwnerReference, hubhash string) bool {
+	if len(owners) == 0 {
+		return false
+	}
+
+	for _, owner := range owners {
+		if owner.Kind != "AppliedManifestWork" {
+			continue
+		}
+
+		if strings.HasPrefix(owner.Name, hubhash) {
+			continue
+		}
+
+		return false
+	}
+
+	return true
 }
 
 // GuessObjectGroupVersionKind returns GVK for the passed runtime object.

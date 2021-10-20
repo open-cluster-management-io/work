@@ -29,11 +29,13 @@ type AppliedManifestWorkFinalizeController struct {
 	appliedManifestWorkLister worklister.AppliedManifestWorkLister
 	spokeDynamicClient        dynamic.Interface
 	rateLimiter               workqueue.RateLimiter
+	hubHash                   string
 }
 
 func NewAppliedManifestWorkFinalizeController(
 	recorder events.Recorder,
 	spokeDynamicClient dynamic.Interface,
+	hubHash string,
 	appliedManifestWorkClient workv1client.AppliedManifestWorkInterface,
 	appliedManifestWorkInformer workinformer.AppliedManifestWorkInformer,
 ) factory.Controller {
@@ -42,6 +44,7 @@ func NewAppliedManifestWorkFinalizeController(
 		appliedManifestWorkClient: appliedManifestWorkClient,
 		appliedManifestWorkLister: appliedManifestWorkInformer.Lister(),
 		spokeDynamicClient:        spokeDynamicClient,
+		hubHash:                   hubHash,
 		rateLimiter:               workqueue.NewItemExponentialFailureRateLimiter(5*time.Millisecond, 1000*time.Second),
 	}
 
@@ -100,7 +103,7 @@ func (m *AppliedManifestWorkFinalizeController) syncAppliedManifestWork(ctx cont
 	// scoped resource correctly.
 	reason := fmt.Sprintf("manifestwork %s is terminating", appliedManifestWork.Spec.ManifestWorkName)
 	resourcesPendingFinalization, errs := helper.DeleteAppliedResources(
-		appliedManifestWork.Status.AppliedResources, reason, m.spokeDynamicClient, controllerContext.Recorder(), *owner)
+		appliedManifestWork.Status.AppliedResources, reason, m.spokeDynamicClient, controllerContext.Recorder(), m.hubHash, *owner)
 
 	updatedAppliedManifestWork := false
 	if len(appliedManifestWork.Status.AppliedResources) != len(resourcesPendingFinalization) {

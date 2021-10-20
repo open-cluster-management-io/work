@@ -113,6 +113,7 @@ func (o *WorkloadAgentOptions) RunWorkloadAgent(ctx context.Context, controllerC
 	appliedManifestWorkFinalizeController := finalizercontroller.NewAppliedManifestWorkFinalizeController(
 		controllerContext.EventRecorder,
 		spokeDynamicClient,
+		hubhash,
 		spokeWorkClient.WorkV1().AppliedManifestWorks(),
 		spokeWorkInformerFactory.Work().V1().AppliedManifestWorks(),
 	)

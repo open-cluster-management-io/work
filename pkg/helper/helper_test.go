@@ -389,25 +389,51 @@ func TestDeleteAppliedResourcess(t *testing.T) {
 		{
 			name: "skip if it is now owned",
 			existingResources: []runtime.Object{
-				newSecret("ns1", "n1", false, "ns1-n1", metav1.OwnerReference{Name: "n2", UID: "b"}),
+				newSecret("ns1", "n1", false, "ns1-n1", metav1.OwnerReference{Kind: "AppliedManifestWork", Name: "n2", UID: "b"}),
 			},
 			resourcesToRemove: []workapiv1.AppliedManifestResourceMeta{
 				{Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1", UID: "ns1-n1"},
 			},
 			expectedResourcesPendingFinalization: []workapiv1.AppliedManifestResourceMeta{},
-			owner:                                metav1.OwnerReference{Name: "n1", UID: "a"},
+			owner:                                metav1.OwnerReference{Kind: "AppliedManifestWork", Name: "n1", UID: "a"},
 		},
 		{
 			name: "skip with multiple owners",
 			existingResources: []runtime.Object{
-				newSecret("ns1", "n1", false, "ns1-n1", metav1.OwnerReference{Name: "n1", UID: "a"}, metav1.OwnerReference{Name: "n2", UID: "b"}),
+				newSecret("ns1", "n1", false, "ns1-n1", metav1.OwnerReference{Kind: "AppliedManifestWork", Name: "n1", UID: "a"}, metav1.OwnerReference{Kind: "AppliedManifestWork", Name: "n2", UID: "b"}),
 			},
 			resourcesToRemove: []workapiv1.AppliedManifestResourceMeta{
 				{Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1", UID: "ns1-n1"},
 				{Version: "v1", Resource: "secrets", Namespace: "ns2", Name: "n2", UID: "ns2-n2"},
 			},
 			expectedResourcesPendingFinalization: []workapiv1.AppliedManifestResourceMeta{},
-			owner:                                metav1.OwnerReference{Name: "n1", UID: "a"},
+			owner:                                metav1.OwnerReference{Kind: "AppliedManifestWork", Name: "n1", UID: "a"},
+		},
+		{
+			name: "skip with multiple owners of different sources",
+			existingResources: []runtime.Object{
+				newSecret("ns1", "n1", false, "ns1-n1", metav1.OwnerReference{Kind: "AppliedManifestWork", Name: "n1", UID: "a"}, metav1.OwnerReference{Kind: "Deployment", Name: "n2", UID: "b"}),
+			},
+			resourcesToRemove: []workapiv1.AppliedManifestResourceMeta{
+				{Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1", UID: "ns1-n1"},
+				{Version: "v1", Resource: "secrets", Namespace: "ns2", Name: "n2", UID: "ns2-n2"},
+			},
+			expectedResourcesPendingFinalization: []workapiv1.AppliedManifestResourceMeta{},
+			owner:                                metav1.OwnerReference{Kind: "AppliedManifestWork", Name: "n1", UID: "a"},
+		},
+		{
+			name: "finalize with multiple owners of different hubs",
+			existingResources: []runtime.Object{
+				newSecret("ns1", "n1", false, "ns1-n1", metav1.OwnerReference{Kind: "AppliedManifestWork", Name: "n1", UID: "a"}, metav1.OwnerReference{Kind: "AppliedManifestWork", Name: "b1", UID: "b"}),
+			},
+			resourcesToRemove: []workapiv1.AppliedManifestResourceMeta{
+				{Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1", UID: "ns1-n1"},
+				{Version: "v1", Resource: "secrets", Namespace: "ns2", Name: "n2", UID: "ns2-n2"},
+			},
+			expectedResourcesPendingFinalization: []workapiv1.AppliedManifestResourceMeta{
+				{Version: "v1", Resource: "secrets", Namespace: "ns1", Name: "n1", UID: "ns1-n1"},
+			},
+			owner: metav1.OwnerReference{Kind: "AppliedManifestWork", Name: "n1", UID: "a"},
 		},
 	}
 
@@ -417,7 +443,7 @@ func TestDeleteAppliedResourcess(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			fakeDynamicClient := fakedynamic.NewSimpleDynamicClient(scheme, c.existingResources...)
-			actual, err := DeleteAppliedResources(c.resourcesToRemove, "testing", fakeDynamicClient, eventstesting.NewTestingEventRecorder(t), c.owner)
+			actual, err := DeleteAppliedResources(c.resourcesToRemove, "testing", fakeDynamicClient, eventstesting.NewTestingEventRecorder(t), "n", c.owner)
 			if err != nil {
 				t.Errorf("unexpected err: %v", err)
 			}

@@ -161,7 +161,7 @@ func (m *AppliedManifestWorkController) syncManifestWork(
 	reason := fmt.Sprintf("it is no longer maintained by manifestwork %s", manifestWork.Name)
 
 	resourcesPendingFinalization, errs := helper.DeleteAppliedResources(
-		noLongerMaintainedResources, reason, m.spokeDynamicClient, controllerContext.Recorder(), *owner)
+		noLongerMaintainedResources, reason, m.spokeDynamicClient, controllerContext.Recorder(), m.hubHash, *owner)
 	if len(errs) != 0 {
 		return utilerrors.NewAggregate(errs)
 	}
