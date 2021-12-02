@@ -44,7 +44,6 @@ var _ = ginkgo.Describe("ManifestWork", func() {
 	ginkgo.BeforeEach(func() {
 		o = spoke.NewWorkloadAgentOptions()
 		o.HubKubeconfigFile = hubKubeconfigFileName
-		o.SpokeKubeconfig = spokeRestConfig
 		o.SpokeClusterName = utilrand.String(5)
 
 		ns := &corev1.Namespace{}
