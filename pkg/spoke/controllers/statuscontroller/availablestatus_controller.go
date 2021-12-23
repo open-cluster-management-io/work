@@ -47,7 +47,7 @@ func NewAvailableStatusController(
 		manifestWorkClient: manifestWorkClient,
 		manifestWorkLister: manifestWorkLister,
 		spokeDynamicClient: spokeDynamicClient,
-		statusReader:       &statusfeedback.StatusReader{},
+		statusReader:       statusfeedback.NewStatusReader(),
 	}
 
 	return factory.New().
@@ -104,6 +104,7 @@ func (c *AvailableStatusController) syncManifestWork(ctx context.Context, origin
 
 	needStatusUpdate := false
 	// handle status condition of manifests
+	// TODO revist this controller since this might bring races when user change the manifests in spec.
 	for index, manifest := range manifestWork.Status.ResourceStatus.Manifests {
 		obj, availableStatusCondition := buildAvailableStatusCondition(manifest.ResourceMeta, c.spokeDynamicClient)
 		newConditions := helper.MergeStatusConditions(manifest.Conditions, []metav1.Condition{availableStatusCondition})
@@ -221,7 +222,7 @@ func (c *AvailableStatusController) getFeedbackValues(
 			if err != nil {
 				errs = append(errs, err)
 			}
-			if len(values) > 0 {
+			if len(valuesByRule) > 0 {
 				values = append(values, valuesByRule...)
 			}
 		}

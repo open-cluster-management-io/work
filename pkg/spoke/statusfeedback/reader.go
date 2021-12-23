@@ -68,7 +68,7 @@ func (s *StatusReader) GetValuesByRule(obj *unstructured.Unstructured, rule work
 
 func getValueByJsonPath(name, path string, obj *unstructured.Unstructured) (*workapiv1.FeedbackValue, error) {
 	j := jsonpath.New(name).AllowMissingKeys(true)
-	err := j.Parse(fmt.Sprintf("{.status%s}", path))
+	err := j.Parse(fmt.Sprintf("{%s}", path))
 	if err != nil {
 		return nil, err
 	}
@@ -86,12 +86,18 @@ func getValueByJsonPath(name, path string, obj *unstructured.Unstructured) (*wor
 
 	// as we only support simple JSON path, we can assume to have only one result (or none, filtered out above)
 	value := results[0][0].Interface()
+
+	if value == nil {
+		// ignore the result if it is nil
+		return nil, nil
+	}
+
 	var fieldValue workapiv1.FieldValue
 	switch t := value.(type) {
 	case int64:
 		fieldValue = workapiv1.FieldValue{
 			Type:    workapiv1.Integer,
-			Integer: int32(t),
+			Integer: &t,
 		}
 		return &workapiv1.FeedbackValue{
 			Name:  name,
@@ -100,7 +106,7 @@ func getValueByJsonPath(name, path string, obj *unstructured.Unstructured) (*wor
 	case string:
 		fieldValue = workapiv1.FieldValue{
 			Type:   workapiv1.String,
-			String: t,
+			String: &t,
 		}
 		return &workapiv1.FeedbackValue{
 			Name:  name,
@@ -109,7 +115,7 @@ func getValueByJsonPath(name, path string, obj *unstructured.Unstructured) (*wor
 	case bool:
 		fieldValue = workapiv1.FieldValue{
 			Type:    workapiv1.Boolean,
-			Boolean: t,
+			Boolean: &t,
 		}
 		return &workapiv1.FeedbackValue{
 			Name:  name,

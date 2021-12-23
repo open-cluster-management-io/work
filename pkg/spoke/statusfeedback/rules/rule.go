@@ -16,15 +16,15 @@ type DefaultWellKnownStatusResolver struct {
 var deploymentRule = []workapiv1.JsonPath{
 	{
 		Name: "ReadyReplicas",
-		Path: ".readyReplicas",
+		Path: ".status.readyReplicas",
 	},
 	{
 		Name: "Replicas",
-		Path: ".replicas",
+		Path: ".status.replicas",
 	},
 	{
 		Name: "AvailableReplicas",
-		Path: ".availableReplicas",
+		Path: ".status.availableReplicas",
 	},
 }
 

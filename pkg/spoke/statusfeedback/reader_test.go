@@ -6,6 +6,7 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	workapiv1 "open-cluster-management.io/api/work/v1"
+	"open-cluster-management.io/work/test/integration/util"
 )
 
 const (
@@ -54,14 +55,14 @@ func TestStatusReader(t *testing.T) {
 					Name: "ReadyReplicas",
 					Value: workapiv1.FieldValue{
 						Type:    workapiv1.Integer,
-						Integer: 1,
+						Integer: util.Int64Ptr(1),
 					},
 				},
 				{
 					Name: "Replicas",
 					Value: workapiv1.FieldValue{
 						Type:    workapiv1.Integer,
-						Integer: 2,
+						Integer: util.Int64Ptr(2),
 					},
 				},
 			},
@@ -74,7 +75,7 @@ func TestStatusReader(t *testing.T) {
 				JsonPaths: []workapiv1.JsonPath{
 					{
 						Name: "available",
-						Path: ".conditions[?(@.type==\"Available\")].status ",
+						Path: ".status.conditions[?(@.type==\"Available\")].status ",
 					},
 				},
 			},
@@ -84,7 +85,7 @@ func TestStatusReader(t *testing.T) {
 					Name: "available",
 					Value: workapiv1.FieldValue{
 						Type:   workapiv1.String,
-						String: "true",
+						String: util.StringPtr("true"),
 					},
 				},
 			},
@@ -97,11 +98,11 @@ func TestStatusReader(t *testing.T) {
 				JsonPaths: []workapiv1.JsonPath{
 					{
 						Name: "available",
-						Path: ".conditions",
+						Path: ".status.conditions",
 					},
 					{
 						Name: "replicas",
-						Path: ".replicas",
+						Path: ".status.replicas",
 					},
 				},
 			},
@@ -111,7 +112,7 @@ func TestStatusReader(t *testing.T) {
 					Name: "replicas",
 					Value: workapiv1.FieldValue{
 						Type:    workapiv1.Integer,
-						Integer: 2,
+						Integer: util.Int64Ptr(2),
 					},
 				},
 			},
