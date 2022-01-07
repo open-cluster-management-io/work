@@ -641,7 +641,11 @@ var _ = ginkgo.Describe("Work agent", func() {
 					},
 				}
 				if !apiequality.Semantic.DeepEqual(values, expectedValues) {
-					return fmt.Errorf("Status feedback values are not correct, we got %v", values)
+					return fmt.Errorf("status feedback values are not correct, we got %v", values)
+				}
+
+				if ok := haveManifestCondition(work.Status.ResourceStatus.Manifests, "StatusFeedbackSynced", []metav1.ConditionStatus{metav1.ConditionTrue}); !ok {
+					return fmt.Errorf("statusFeedbackSynced condition should be True")
 				}
 				return nil
 			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())

@@ -27,10 +27,9 @@ func (s *StatusReader) GetValuesByRule(obj *unstructured.Unstructured, rule work
 
 	switch rule.Type {
 	case workapiv1.WellKnownStatusType:
-		gvk := obj.GroupVersionKind()
-		paths := s.wellKnownStatus.GetPathsByKind(gvk.GroupKind())
+		paths := s.wellKnownStatus.GetPathsByKind(obj.GroupVersionKind())
 		if len(paths) == 0 {
-			break
+			return values, fmt.Errorf("cannot find the wellknown statuses for resrouce with gvk %s", obj.GroupVersionKind().String())
 		}
 
 		for _, path := range paths {
@@ -48,6 +47,7 @@ func (s *StatusReader) GetValuesByRule(obj *unstructured.Unstructured, rule work
 		for _, path := range rule.JsonPaths {
 			// skip if version is specified and the object version does not match
 			if len(path.Version) != 0 && obj.GroupVersionKind().Version != path.Version {
+				errs = append(errs, fmt.Errorf("version set in the path %s is not matched for the related resource", path.Name))
 				continue
 			}
 
@@ -70,13 +70,13 @@ func getValueByJsonPath(name, path string, obj *unstructured.Unstructured) (*wor
 	j := jsonpath.New(name).AllowMissingKeys(true)
 	err := j.Parse(fmt.Sprintf("{%s}", path))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to parse json path %s of %s with error: %v", path, name, err)
 	}
 
 	results, err := j.FindResults(obj.UnstructuredContent())
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to find value for %s with error: %v", name, err)
 	}
 
 	if len(results) == 0 || len(results[0]) == 0 {
@@ -123,5 +123,5 @@ func getValueByJsonPath(name, path string, obj *unstructured.Unstructured) (*wor
 		}, nil
 	}
 
-	return nil, fmt.Errorf("type for %v is not found", reflect.TypeOf(value))
+	return nil, fmt.Errorf("the type %v of the value for %s is not found", reflect.TypeOf(value), name)
 }

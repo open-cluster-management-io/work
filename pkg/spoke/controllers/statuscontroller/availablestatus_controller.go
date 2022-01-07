@@ -22,11 +22,15 @@ import (
 	workinformer "open-cluster-management.io/api/client/work/informers/externalversions/work/v1"
 	worklister "open-cluster-management.io/api/client/work/listers/work/v1"
 	workapiv1 "open-cluster-management.io/api/work/v1"
-	"open-cluster-management.io/work/pkg/helper"
 	"open-cluster-management.io/work/pkg/spoke/statusfeedback"
 )
 
+const statusFeedbackConditionType = "StatusFeedbackSynced"
+
 // AvailableStatusController is to update the available status conditions of both manifests and manifestworks.
+// It is also used to get the status value based on status feedback configuration in manifestwork. The two functions
+// are logically disinct, however, they are put in the same control loop to reduce live get call to spoke apiserver
+// and status update call to hub apiserver.
 type AvailableStatusController struct {
 	manifestWorkClient workv1client.ManifestWorkInterface
 	manifestWorkLister worklister.ManifestWorkNamespaceLister
@@ -102,48 +106,29 @@ func (c *AvailableStatusController) syncManifestWork(ctx context.Context, origin
 	klog.V(4).Infof("Reconciling ManifestWork %q", originalManifestWork.Name)
 	manifestWork := originalManifestWork.DeepCopy()
 
-	needStatusUpdate := false
 	// handle status condition of manifests
 	// TODO revist this controller since this might bring races when user change the manifests in spec.
 	for index, manifest := range manifestWork.Status.ResourceStatus.Manifests {
-		obj, availableStatusCondition := buildAvailableStatusCondition(manifest.ResourceMeta, c.spokeDynamicClient)
-		newConditions := helper.MergeStatusConditions(manifest.Conditions, []metav1.Condition{availableStatusCondition})
-		if !equality.Semantic.DeepEqual(manifestWork.Status.ResourceStatus.Manifests[index].Conditions, newConditions) {
-			manifestWork.Status.ResourceStatus.Manifests[index].Conditions = newConditions
-			needStatusUpdate = true
-		}
-
-		values, err := c.getFeedbackValues(manifest.ResourceMeta, obj, manifestWork.Spec.ManifestConfigs)
+		obj, availableStatusCondition, err := buildAvailableStatusCondition(manifest.ResourceMeta, c.spokeDynamicClient)
+		meta.SetStatusCondition(&manifestWork.Status.ResourceStatus.Manifests[index].Conditions, availableStatusCondition)
 		if err != nil {
-			//TODO Update condition heres
-			klog.Errorf("Some values cannot be obtained %v", err)
+			// skip getting status values if resource is not available.
+			continue
 		}
 
-		if !equality.Semantic.DeepEqual(manifestWork.Status.ResourceStatus.Manifests[index].StatusFeedbacks.Values, values) {
-			manifestWork.Status.ResourceStatus.Manifests[index].StatusFeedbacks.Values = values
-			needStatusUpdate = true
-		}
+		// Read status of the resource according to feedback rules.
+		values, statusFeedbackCondition := c.getFeedbackValues(manifest.ResourceMeta, obj, manifestWork.Spec.ManifestConfigs)
+		meta.SetStatusCondition(&manifestWork.Status.ResourceStatus.Manifests[index].Conditions, statusFeedbackCondition)
+		manifestWork.Status.ResourceStatus.Manifests[index].StatusFeedbacks.Values = values
 	}
 
-	// handle status condition of manifestwork
-	var workStatusConditions []metav1.Condition
-	switch {
-	case len(manifestWork.Status.ResourceStatus.Manifests) == 0:
-		// remove condition with type Available if no Manifests exists
-		for _, condition := range manifestWork.Status.Conditions {
-			if condition.Type != string(workapiv1.WorkAvailable) {
-				workStatusConditions = append(workStatusConditions, condition)
-			}
-		}
-	default:
-		// aggregate ManifestConditions and update work status condition
-		workAvailableStatusCondition := aggregateManifestConditions(manifestWork.Generation, manifestWork.Status.ResourceStatus.Manifests)
-		workStatusConditions = helper.MergeStatusConditions(manifestWork.Status.Conditions, []metav1.Condition{workAvailableStatusCondition})
-	}
-	manifestWork.Status.Conditions = workStatusConditions
+	// aggregate ManifestConditions and update work status condition
+	workAvailableStatusCondition := aggregateManifestConditions(manifestWork.Generation, manifestWork.Status.ResourceStatus.Manifests)
+	meta.SetStatusCondition(&manifestWork.Status.Conditions, workAvailableStatusCondition)
 
 	// no work if the status of manifestwork does not change
-	if !needStatusUpdate && equality.Semantic.DeepEqual(originalManifestWork.Status.Conditions, manifestWork.Status.Conditions) {
+	if equality.Semantic.DeepEqual(originalManifestWork.Status.ResourceStatus, manifestWork.Status.ResourceStatus) &&
+		equality.Semantic.DeepEqual(originalManifestWork.Status.Conditions, manifestWork.Status.Conditions) {
 		return nil
 	}
 
@@ -190,6 +175,14 @@ func aggregateManifestConditions(generation int64, manifests []workapiv1.Manifes
 			ObservedGeneration: generation,
 			Message:            fmt.Sprintf("%d of %d resources have unknown status", unknown, len(manifests)),
 		}
+	case available == 0:
+		return metav1.Condition{
+			Type:               string(workapiv1.WorkAvailable),
+			Status:             metav1.ConditionUnknown,
+			Reason:             "ResourcesStatusUnknown",
+			ObservedGeneration: generation,
+			Message:            "cannot get any available resource ",
+		}
 	default:
 		return metav1.Condition{
 			Type:               string(workapiv1.WorkAvailable),
@@ -202,9 +195,10 @@ func aggregateManifestConditions(generation int64, manifests []workapiv1.Manifes
 }
 
 func (c *AvailableStatusController) getFeedbackValues(
-	resourceMeta workapiv1.ManifestResourceMeta, obj *unstructured.Unstructured, manifestOptions []workapiv1.ManifestConfigOption) ([]workapiv1.FeedbackValue, error) {
+	resourceMeta workapiv1.ManifestResourceMeta, obj *unstructured.Unstructured, manifestOptions []workapiv1.ManifestConfigOption) ([]workapiv1.FeedbackValue, metav1.Condition) {
 	errs := []error{}
 	values := []workapiv1.FeedbackValue{}
+
 	identifier := workapiv1.ResourceIdentifier{
 		Group:     resourceMeta.Group,
 		Resource:  resourceMeta.Resource,
@@ -228,11 +222,34 @@ func (c *AvailableStatusController) getFeedbackValues(
 		}
 	}
 
-	return values, utilerrors.NewAggregate(errs)
+	err := utilerrors.NewAggregate(errs)
+
+	if err != nil {
+		return values, metav1.Condition{
+			Type:    statusFeedbackConditionType,
+			Reason:  "StatusFeedbackSyncFailed",
+			Status:  metav1.ConditionFalse,
+			Message: fmt.Sprintf("Sync status feedback failed with error %v", err),
+		}
+	}
+
+	if len(values) == 0 {
+		return values, metav1.Condition{
+			Type:   statusFeedbackConditionType,
+			Reason: "NoStatusFeedbackSynced",
+			Status: metav1.ConditionTrue,
+		}
+	}
+
+	return values, metav1.Condition{
+		Type:   statusFeedbackConditionType,
+		Reason: "StatusFeedbackSynced",
+		Status: metav1.ConditionTrue,
+	}
 }
 
 // buildAvailableStatusCondition returns a StatusCondition with type Available for a given manifest resource
-func buildAvailableStatusCondition(resourceMeta workapiv1.ManifestResourceMeta, dynamicClient dynamic.Interface) (*unstructured.Unstructured, metav1.Condition) {
+func buildAvailableStatusCondition(resourceMeta workapiv1.ManifestResourceMeta, dynamicClient dynamic.Interface) (*unstructured.Unstructured, metav1.Condition, error) {
 	conditionType := string(workapiv1.ManifestAvailable)
 
 	if len(resourceMeta.Resource) == 0 || len(resourceMeta.Version) == 0 || len(resourceMeta.Name) == 0 {
@@ -241,30 +258,32 @@ func buildAvailableStatusCondition(resourceMeta workapiv1.ManifestResourceMeta, 
 			Status:  metav1.ConditionUnknown,
 			Reason:  "IncompletedResourceMeta",
 			Message: "Resource meta is incompleted",
-		}
+		}, fmt.Errorf("incomplete resource meta")
 	}
 
-	obj, available, err := isResourceAvailable(resourceMeta.Namespace, resourceMeta.Name, schema.GroupVersionResource{
+	gvr := schema.GroupVersionResource{
 		Group:    resourceMeta.Group,
 		Version:  resourceMeta.Version,
 		Resource: resourceMeta.Resource,
-	}, dynamicClient)
-	if err != nil {
-		return nil, metav1.Condition{
-			Type:    conditionType,
-			Status:  metav1.ConditionUnknown,
-			Reason:  "FetchingResourceFailed",
-			Message: fmt.Sprintf("Failed to fetch resource: %v", err),
-		}
 	}
 
-	if !available {
+	obj, err := dynamicClient.Resource(gvr).Namespace(resourceMeta.Namespace).Get(context.TODO(), resourceMeta.Name, metav1.GetOptions{})
+
+	switch {
+	case errors.IsNotFound(err):
 		return nil, metav1.Condition{
 			Type:    conditionType,
 			Status:  metav1.ConditionFalse,
 			Reason:  "ResourceNotAvailable",
 			Message: "Resource is not available",
-		}
+		}, err
+	case err != nil:
+		return nil, metav1.Condition{
+			Type:    conditionType,
+			Status:  metav1.ConditionUnknown,
+			Reason:  "FetchingResourceFailed",
+			Message: fmt.Sprintf("Failed to fetch resource: %v", err),
+		}, err
 	}
 
 	return obj, metav1.Condition{
@@ -272,17 +291,5 @@ func buildAvailableStatusCondition(resourceMeta workapiv1.ManifestResourceMeta, 
 		Status:  metav1.ConditionTrue,
 		Reason:  "ResourceAvailable",
 		Message: "Resource is available",
-	}
-}
-
-// isResourceAvailable checks if the specific resource is available or not
-func isResourceAvailable(namespace, name string, gvr schema.GroupVersionResource, dynamicClient dynamic.Interface) (*unstructured.Unstructured, bool, error) {
-	obj, err := dynamicClient.Resource(gvr).Namespace(namespace).Get(context.TODO(), name, metav1.GetOptions{})
-	if errors.IsNotFound(err) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	return obj, true, nil
+	}, nil
 }

@@ -426,7 +426,7 @@ var _ = ginkgo.Describe("ManifestWork", func() {
 				}
 
 				for i := range work.Status.ResourceStatus.Manifests {
-					if len(work.Status.ResourceStatus.Manifests[i].Conditions) != 2 {
+					if len(work.Status.ResourceStatus.Manifests[i].Conditions) != 3 {
 						return false
 					}
 				}

@@ -29,6 +29,25 @@ const (
 		}
 	}
 	`
+	deploymentJsonUknownGroup = `
+	{
+		"apiVersion":"extensions/v1",
+		"kind":"Deployment",
+		"metadata":{
+			"name":"test"
+		},
+		"status":{
+			"readyReplicas":1,
+			"replicas":2,
+			"conditions":[
+				{
+					"type":"Available",
+					"status":"true"
+				}
+			]
+		}
+	}
+	`
 )
 
 func unstrctureObject(data string) *unstructured.Unstructured {
@@ -99,6 +118,41 @@ func TestStatusReader(t *testing.T) {
 					{
 						Name: "available",
 						Path: ".status.conditions",
+					},
+					{
+						Name: "replicas",
+						Path: ".status.replicas",
+					},
+				},
+			},
+			expectError: true,
+			expectedValue: []workapiv1.FeedbackValue{
+				{
+					Name: "replicas",
+					Value: workapiv1.FieldValue{
+						Type:    workapiv1.Integer,
+						Integer: util.Int64Ptr(2),
+					},
+				},
+			},
+		},
+		{
+			name:          "mismatched gvk",
+			object:        unstrctureObject(deploymentJsonUknownGroup),
+			rule:          workapiv1.FeedbackRule{Type: workapiv1.WellKnownStatusType},
+			expectError:   true,
+			expectedValue: []workapiv1.FeedbackValue{},
+		},
+		{
+			name:   "wrog version set for jsonpaths",
+			object: unstrctureObject(deploymentJson),
+			rule: workapiv1.FeedbackRule{
+				Type: workapiv1.JSONPathsType,
+				JsonPaths: []workapiv1.JsonPath{
+					{
+						Name:    "available",
+						Path:    ".status.conditions",
+						Version: "v1beta1",
 					},
 					{
 						Name: "replicas",

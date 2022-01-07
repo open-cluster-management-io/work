@@ -145,6 +145,10 @@ var _ = ginkgo.Describe("ManifestWork Status Feedback", func() {
 					return fmt.Errorf("Status feedback values are not correct, we got %v", values)
 				}
 
+				if !util.HaveManifestCondition(work.Status.ResourceStatus.Manifests, "StatusFeedbackSynced", []metav1.ConditionStatus{metav1.ConditionTrue}) {
+					return fmt.Errorf("Status sync condition should be True")
+				}
+
 				return err
 			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
 
@@ -203,7 +207,11 @@ var _ = ginkgo.Describe("ManifestWork Status Feedback", func() {
 					return fmt.Errorf("Status feedback values are not correct, we got %v", values)
 				}
 
-				return err
+				if !util.HaveManifestCondition(work.Status.ResourceStatus.Manifests, "StatusFeedbackSynced", []metav1.ConditionStatus{metav1.ConditionTrue}) {
+					return fmt.Errorf("Status sync condition should be True")
+				}
+
+				return nil
 			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
 		})
 
@@ -225,8 +233,8 @@ var _ = ginkgo.Describe("ManifestWork Status Feedback", func() {
 									Path: ".status.conditions[?(@.type==\"Available\")].status",
 								},
 								{
-									Name: "Non-Existent path",
-									Path: ".non-existent",
+									Name: "wrong json path",
+									Path: ".status.conditions",
 								},
 							},
 						},
@@ -285,7 +293,11 @@ var _ = ginkgo.Describe("ManifestWork Status Feedback", func() {
 					return fmt.Errorf("Status feedback values are not correct, we got %v", values)
 				}
 
-				return err
+				if !util.HaveManifestCondition(work.Status.ResourceStatus.Manifests, "StatusFeedbackSynced", []metav1.ConditionStatus{metav1.ConditionFalse}) {
+					return fmt.Errorf("Status sync condition should be True")
+				}
+
+				return nil
 			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
 		})
 
@@ -389,7 +401,11 @@ var _ = ginkgo.Describe("ManifestWork Status Feedback", func() {
 					return fmt.Errorf("Status feedback values are not correct, we got %v", work.Status.ResourceStatus.Manifests[1].StatusFeedbacks.Values)
 				}
 
-				return err
+				if !util.HaveManifestCondition(work.Status.ResourceStatus.Manifests, "StatusFeedbackSynced", []metav1.ConditionStatus{metav1.ConditionTrue, metav1.ConditionFalse}) {
+					return fmt.Errorf("Status sync condition should be True")
+				}
+
+				return nil
 			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
 		})
 	})

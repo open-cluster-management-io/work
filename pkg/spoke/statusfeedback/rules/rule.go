@@ -6,11 +6,11 @@ import (
 )
 
 type WellKnownStatusRuleResolver interface {
-	GetPathsByKind(schema.GroupKind) []workapiv1.JsonPath
+	GetPathsByKind(schema.GroupVersionKind) []workapiv1.JsonPath
 }
 
 type DefaultWellKnownStatusResolver struct {
-	rules map[schema.GroupKind][]workapiv1.JsonPath
+	rules map[schema.GroupVersionKind][]workapiv1.JsonPath
 }
 
 var deploymentRule = []workapiv1.JsonPath{
@@ -30,12 +30,12 @@ var deploymentRule = []workapiv1.JsonPath{
 
 func DefaultWellKnownStatusRule() WellKnownStatusRuleResolver {
 	return &DefaultWellKnownStatusResolver{
-		rules: map[schema.GroupKind][]workapiv1.JsonPath{
-			{Group: "apps", Kind: "Deployment"}: deploymentRule,
+		rules: map[schema.GroupVersionKind][]workapiv1.JsonPath{
+			{Group: "apps", Version: "v1", Kind: "Deployment"}: deploymentRule,
 		},
 	}
 }
 
-func (w *DefaultWellKnownStatusResolver) GetPathsByKind(gvk schema.GroupKind) []workapiv1.JsonPath {
+func (w *DefaultWellKnownStatusResolver) GetPathsByKind(gvk schema.GroupVersionKind) []workapiv1.JsonPath {
 	return w.rules[gvk]
 }

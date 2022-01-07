@@ -112,8 +112,9 @@ func resetOrdinal(meta workapiv1.ManifestResourceMeta) workapiv1.ManifestResourc
 
 func mergeManifestCondition(condition, newCondition workapiv1.ManifestCondition) workapiv1.ManifestCondition {
 	return workapiv1.ManifestCondition{
-		ResourceMeta:    newCondition.ResourceMeta,
-		StatusFeedbacks: newCondition.StatusFeedbacks,
+		ResourceMeta: newCondition.ResourceMeta,
+		//Note this func is only used for merging status conditions, the statusFeedbacks should keep the old one.
+		StatusFeedbacks: condition.StatusFeedbacks,
 		Conditions:      MergeStatusConditions(condition.Conditions, newCondition.Conditions),
 	}
 }
