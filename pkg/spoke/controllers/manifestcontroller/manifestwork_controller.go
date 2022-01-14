@@ -84,7 +84,7 @@ func NewManifestWorkController(
 		hubHash:                   hubHash,
 		restMapper:                restMapper,
 		// TODO we did not gc resources in cache, which may cause more memory usage. It
-		// should be refactored using own cache implementation later.
+		// should be refactored using own cache implementation in the future.
 		staticResourceCache: resourceapply.NewResourceCache(),
 	}
 
