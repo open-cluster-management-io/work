@@ -103,6 +103,8 @@ func (o *WorkloadAgentOptions) RunWorkloadAgent(ctx context.Context, controllerC
 		return err
 	}
 
+	resourceCache := helper.NewWorkResourceCache()
+
 	manifestWorkController := manifestcontroller.NewManifestWorkController(
 		ctx,
 		controllerContext.EventRecorder,
@@ -116,6 +118,7 @@ func (o *WorkloadAgentOptions) RunWorkloadAgent(ctx context.Context, controllerC
 		spokeWorkInformerFactory.Work().V1().AppliedManifestWorks(),
 		hubhash,
 		restMapper,
+		resourceCache,
 	)
 	addFinalizerController := finalizercontroller.NewAddFinalizerController(
 		controllerContext.EventRecorder,
@@ -128,6 +131,7 @@ func (o *WorkloadAgentOptions) RunWorkloadAgent(ctx context.Context, controllerC
 		spokeDynamicClient,
 		spokeWorkClient.WorkV1().AppliedManifestWorks(),
 		spokeWorkInformerFactory.Work().V1().AppliedManifestWorks(),
+		resourceCache,
 	)
 	manifestWorkFinalizeController := finalizercontroller.NewManifestWorkFinalizeController(
 		controllerContext.EventRecorder,
@@ -146,6 +150,7 @@ func (o *WorkloadAgentOptions) RunWorkloadAgent(ctx context.Context, controllerC
 		workInformerFactory.Work().V1().ManifestWorks().Lister().ManifestWorks(o.SpokeClusterName),
 		spokeWorkClient.WorkV1().AppliedManifestWorks(),
 		spokeWorkInformerFactory.Work().V1().AppliedManifestWorks(),
+		resourceCache,
 		hubhash,
 	)
 	availableStatusController := statuscontroller.NewAvailableStatusController(

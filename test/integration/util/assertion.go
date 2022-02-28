@@ -62,10 +62,17 @@ func AssertWorkGeneration(namespace, name string, workClient workclientset.Inter
 // check if work is deleted
 func AssertWorkDeleted(namespace, name, hubhash string, manifests []workapiv1.Manifest, workClient workclientset.Interface, kubeClient kubernetes.Interface, eventuallyTimeout, eventuallyInterval int) {
 	// wait for deletion of manifest work
-	gomega.Eventually(func() bool {
+	gomega.Eventually(func() error {
 		_, err := workClient.WorkV1().ManifestWorks(namespace).Get(context.Background(), name, metav1.GetOptions{})
-		return apierrors.IsNotFound(err)
-	}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+		if err == nil {
+			return fmt.Errorf("work %s is still deleting", name)
+		}
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+
+		return nil
+	}, eventuallyTimeout, eventuallyInterval).Should(gomega.Succeed())
 
 	// wait for deletion of appliedmanifestwork
 	appliedManifestWorkName := fmt.Sprintf("%s-%s", hubhash, name)
@@ -80,27 +87,34 @@ func AssertWorkDeleted(namespace, name, hubhash string, manifests []workapiv1.Ma
 }
 
 func AssertAppliedManifestWorkDeleted(name string, workClient workclientset.Interface, eventuallyTimeout, eventuallyInterval int) {
-	gomega.Eventually(func() bool {
+	gomega.Eventually(func() error {
 		_, err := workClient.WorkV1().AppliedManifestWorks().Get(context.Background(), name, metav1.GetOptions{})
-		return apierrors.IsNotFound(err)
-	}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+		if err == nil {
+			return fmt.Errorf("appliedWork is still deleting")
+		}
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+
+		return nil
+	}, eventuallyTimeout, eventuallyInterval).Should(gomega.Succeed())
 }
 
 // check if finalizer is added
 func AssertFinalizerAdded(namespace, name string, workClient workclientset.Interface, eventuallyTimeout, eventuallyInterval int) {
-	gomega.Eventually(func() bool {
+	gomega.Eventually(func() error {
 		work, err := workClient.WorkV1().ManifestWorks(namespace).Get(context.Background(), name, metav1.GetOptions{})
 		if err != nil {
-			return false
+			return err
 		}
 
 		for _, finalizer := range work.Finalizers {
 			if finalizer == "cluster.open-cluster-management.io/manifest-work-cleanup" {
-				return true
+				return nil
 			}
 		}
-		return false
-	}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+		return fmt.Errorf("finalizer for work %s is not added", name)
+	}, eventuallyTimeout, eventuallyInterval).Should(gomega.Succeed())
 }
 
 // check if all manifests are applied

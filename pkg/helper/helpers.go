@@ -125,6 +125,7 @@ func MergeStatusConditions(conditions []metav1.Condition, newConditions []metav1
 	merged := []metav1.Condition{}
 
 	merged = append(merged, conditions...)
+
 	for _, condition := range newConditions {
 		// merge two conditions if necessary
 		meta.SetStatusCondition(&merged, condition)
@@ -193,6 +194,7 @@ func DeleteAppliedResources(
 	resources []workapiv1.AppliedManifestResourceMeta,
 	reason string,
 	dynamicClient dynamic.Interface,
+	resourceCache *WorkResourceCache,
 	recorder events.Recorder,
 	owner metav1.OwnerReference) ([]workapiv1.AppliedManifestResourceMeta, []error) {
 	var resourcesPendingFinalization []workapiv1.AppliedManifestResourceMeta
@@ -224,6 +226,8 @@ func DeleteAppliedResources(
 				gvr, resource.Namespace, resource.Name, err))
 			continue
 		}
+
+		resourceCache.RemoveCache(u)
 
 		existingOwner := u.GetOwnerReferences()
 

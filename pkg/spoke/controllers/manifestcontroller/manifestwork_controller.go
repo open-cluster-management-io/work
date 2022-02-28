@@ -49,7 +49,7 @@ type ManifestWorkController struct {
 	spokeAPIExtensionClient   apiextensionsclient.Interface
 	hubHash                   string
 	restMapper                meta.RESTMapper
-	staticResourceCache       resourceapply.ResourceCache
+	resourceCache             *helper.WorkResourceCache
 }
 
 type applyResult struct {
@@ -71,7 +71,8 @@ func NewManifestWorkController(
 	appliedManifestWorkClient workv1client.AppliedManifestWorkInterface,
 	appliedManifestWorkInformer workinformer.AppliedManifestWorkInformer,
 	hubHash string,
-	restMapper meta.RESTMapper) factory.Controller {
+	restMapper meta.RESTMapper,
+	resourceCache *helper.WorkResourceCache) factory.Controller {
 
 	controller := &ManifestWorkController{
 		manifestWorkClient:        manifestWorkClient,
@@ -83,9 +84,7 @@ func NewManifestWorkController(
 		spokeAPIExtensionClient:   spokeAPIExtensionClient,
 		hubHash:                   hubHash,
 		restMapper:                restMapper,
-		// TODO we did not gc resources in cache, which may cause more memory usage. It
-		// should be refactored using own cache implementation in the future.
-		staticResourceCache: resourceapply.NewResourceCache(),
+		resourceCache:             resourceCache,
 	}
 
 	return factory.New().
@@ -252,14 +251,15 @@ func (m *ManifestWorkController) applyOneManifest(
 
 	owner = manageOwnerRef(gvr, resMeta.Namespace, resMeta.Name, deleteOption, owner)
 
-	results := resourceapply.ApplyDirectly(ctx, clientHolder, recorder, m.staticResourceCache, func(name string) ([]byte, error) {
-		unstructuredObj := &unstructured.Unstructured{}
-		err := unstructuredObj.UnmarshalJSON(manifest.Raw)
-		if err != nil {
-			return nil, err
-		}
+	unstructuredObj := &unstructured.Unstructured{}
+	err = unstructuredObj.UnmarshalJSON(manifest.Raw)
+	if err != nil {
+		result.Error = err
+		return result
+	}
+	unstructuredObj.SetOwnerReferences([]metav1.OwnerReference{owner})
 
-		unstructuredObj.SetOwnerReferences([]metav1.OwnerReference{owner})
+	results := resourceapply.ApplyDirectly(ctx, clientHolder, recorder, m.resourceCache, func(name string) ([]byte, error) {
 		return unstructuredObj.MarshalJSON()
 	}, "manifest")
 
@@ -271,35 +271,17 @@ func (m *ManifestWorkController) applyOneManifest(
 	// TODO we should check the certain error.
 	// Use dynamic client when scheme cannot decode manifest or typed client cannot handle the object
 	if isDecodeError(result.Error) || isUnhandledError(result.Error) || isUnsupportedError(result.Error) {
-		result.Result, result.Changed, result.Error = m.applyUnstructured(ctx, manifest.Raw, owner, gvr, recorder)
+		result.Result, result.Changed, result.Error = m.applyUnstructured(ctx, unstructuredObj, gvr, recorder)
 	}
 
 	return result
 }
 
-func (m *ManifestWorkController) decodeUnstructured(data []byte) (*unstructured.Unstructured, error) {
-	unstructuredObj := &unstructured.Unstructured{}
-	err := unstructuredObj.UnmarshalJSON(data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode object: %w", err)
-	}
-
-	return unstructuredObj, nil
-}
-
 func (m *ManifestWorkController) applyUnstructured(
 	ctx context.Context,
-	data []byte,
-	owner metav1.OwnerReference,
+	required *unstructured.Unstructured,
 	gvr schema.GroupVersionResource,
 	recorder events.Recorder) (*unstructured.Unstructured, bool, error) {
-
-	required, err := m.decodeUnstructured(data)
-	if err != nil {
-		return nil, false, err
-	}
-
-	required.SetOwnerReferences([]metav1.OwnerReference{owner})
 
 	existing, err := m.spokeDynamicClient.
 		Resource(gvr).
@@ -310,6 +292,7 @@ func (m *ManifestWorkController) applyUnstructured(
 	case errors.IsNotFound(err):
 		actual, err := m.spokeDynamicClient.Resource(gvr).Namespace(required.GetNamespace()).Create(
 			ctx, resourcemerge.WithCleanLabelsAndAnnotations(required).(*unstructured.Unstructured), metav1.CreateOptions{})
+		m.resourceCache.UpdateCachedResourceMetadata(required, actual)
 		recorder.Eventf(fmt.Sprintf(
 			"%s Created", required.GetKind()), "Created %s/%s because it was missing", required.GetNamespace(), required.GetName())
 		return actual, true, err
@@ -335,6 +318,12 @@ func (m *ManifestWorkController) applyUnstructured(
 	// Keep the finalizers unchanged
 	required.SetFinalizers(existing.GetFinalizers())
 
+	// Always use generation to check skip for unstructured. It should be fine since resources which do not increment generation
+	// have been handled in ApplyDirectly.
+	if m.resourceCache.SafeToSkipApplyWithGeneration(required, existing) {
+		return existing, false, nil
+	}
+
 	// Compare and update the unstrcuctured.
 	if !*modified && isSameUnstructured(required, existing) {
 		return existing, false, nil
@@ -342,6 +331,7 @@ func (m *ManifestWorkController) applyUnstructured(
 	required.SetResourceVersion(existing.GetResourceVersion())
 	actual, err := m.spokeDynamicClient.Resource(gvr).Namespace(required.GetNamespace()).Update(
 		ctx, required, metav1.UpdateOptions{})
+	m.resourceCache.UpdateCachedResourceMetadata(required, actual)
 	recorder.Eventf(fmt.Sprintf(
 		"%s Updated", required.GetKind()), "Updated %s/%s", required.GetNamespace(), required.GetName())
 	return actual, true, err
@@ -403,7 +393,7 @@ func manageOwnerRef(
 // generateUpdateStatusFunc returns a function which aggregates manifest conditions and generates work conditions.
 // Rules to generate work status conditions from manifest conditions
 // #1: Applied - work status condition (with type Applied) is applied if all manifest conditions (with type Applied) are applied
-// TODO: add rules for other condition types, like Progressing, Available, Degraded
+// TODO: add rules for other condition types, like Progressing, Degraded
 func (m *ManifestWorkController) generateUpdateStatusFunc(generation int64, newManifestConditions []workapiv1.ManifestCondition) helper.UpdateManifestWorkStatusFunc {
 	return func(oldStatus *workapiv1.ManifestWorkStatus) error {
 		// merge the new manifest conditions with the existing manifest conditions
