@@ -9,8 +9,8 @@ import (
 func TestCache(t *testing.T) {
 	cache := NewWorkResourceCache()
 
-	requiredObj := spoketesting.NewUnstructured("v1", "TestKind", "testns", "test")
-	existingObj := spoketesting.NewUnstructured("v1", "TestKind", "testns", "test")
+	requiredObj := spoketesting.NewUnstructured("foo.test.io/v1", "TestKind", "testns", "test")
+	existingObj := spoketesting.NewUnstructured("foo.test.io/v1", "TestKind", "testns", "test")
 	existingObj.SetResourceVersion("test1")
 	existingObj.SetGeneration(1)
 

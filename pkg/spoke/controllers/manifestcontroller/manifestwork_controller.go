@@ -277,6 +277,9 @@ func (m *ManifestWorkController) applyOneManifest(
 	return result
 }
 
+// applyUnstructured handles resources that are not handled by ApplyDirectly. It includes:
+// - k8s resources not in core/rbac/apiextension/admissionregistration apigroup
+// - all custom resources
 func (m *ManifestWorkController) applyUnstructured(
 	ctx context.Context,
 	required *unstructured.Unstructured,
@@ -290,12 +293,16 @@ func (m *ManifestWorkController) applyUnstructured(
 
 	switch {
 	case errors.IsNotFound(err):
-		actual, err := m.spokeDynamicClient.Resource(gvr).Namespace(required.GetNamespace()).Create(
+		actual, createErr := m.spokeDynamicClient.Resource(gvr).Namespace(required.GetNamespace()).Create(
 			ctx, resourcemerge.WithCleanLabelsAndAnnotations(required).(*unstructured.Unstructured), metav1.CreateOptions{})
 		m.resourceCache.UpdateCachedResourceMetadata(required, actual)
+		if createErr != nil {
+			return actual, false, createErr
+		}
 		recorder.Eventf(fmt.Sprintf(
-			"%s Created", required.GetKind()), "Created %s/%s because it was missing", required.GetNamespace(), required.GetName())
-		return actual, true, err
+			"%s Created", required.GetKind()),
+			"Created %s/%s with generation %d because it was missing", required.GetNamespace(), required.GetName(), actual.GetGeneration())
+		return actual, true, createErr
 	case err != nil:
 		return nil, false, err
 	}
@@ -318,8 +325,9 @@ func (m *ManifestWorkController) applyUnstructured(
 	// Keep the finalizers unchanged
 	required.SetFinalizers(existing.GetFinalizers())
 
-	// Always use generation to check skip for unstructured. It should be fine since resources which do not increment generation
-	// have been handled in ApplyDirectly.
+	// Use generation to check skip for unstructured. We currently only check skip if the resource is:
+	// - in apps or batch apigroup
+	// - a custom resource
 	if m.resourceCache.SafeToSkipApplyWithGeneration(required, existing) {
 		return existing, false, nil
 	}
@@ -328,12 +336,20 @@ func (m *ManifestWorkController) applyUnstructured(
 	if !*modified && isSameUnstructured(required, existing) {
 		return existing, false, nil
 	}
-	required.SetResourceVersion(existing.GetResourceVersion())
+
+	requiredCopy := required.DeepCopy()
+	requiredCopy.SetResourceVersion(existing.GetResourceVersion())
 	actual, err := m.spokeDynamicClient.Resource(gvr).Namespace(required.GetNamespace()).Update(
-		ctx, required, metav1.UpdateOptions{})
+		ctx, requiredCopy, metav1.UpdateOptions{})
+
+	if err != nil {
+		return actual, false, err
+	}
+
 	m.resourceCache.UpdateCachedResourceMetadata(required, actual)
+
 	recorder.Eventf(fmt.Sprintf(
-		"%s Updated", required.GetKind()), "Updated %s/%s", required.GetNamespace(), required.GetName())
+		"%s Updated", required.GetKind()), "Updated %s/%s with generation %d", required.GetNamespace(), required.GetName(), actual.GetGeneration())
 	return actual, true, err
 }
 

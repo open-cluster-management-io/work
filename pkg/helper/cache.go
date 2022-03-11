@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"sync"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -24,6 +25,8 @@ type cachedVersionKey struct {
 // record of resource metadata used to determine if its safe to return early from an ApplyFoo
 // resourceHash is an ms5 hash of the required in an ApplyFoo that is computed in case the input changes
 // resourceVersion is the received resourceVersion from the apiserver in response to an update that is comparable to the GET
+// generation is the received generation from the apiserver in responsed to an update. Generation is used to compare the resource
+// if it is incremented upon the change of the intent of the resource.
 type cachedResource struct {
 	resourceHash, resourceVersion string
 	generation                    int64
@@ -60,6 +63,22 @@ func getResourceMetadata(obj runtime.Object) (schema.GroupKind, string, string, 
 	}
 
 	return gvk.GroupKind(), metadata.GetName(), metadata.GetNamespace(), resourceHash, nil
+}
+
+// allowSKipByGeneration checks if a certain group kind can use generation to compare the change of the intent
+// of the resource. It currently return true when:
+// - resource in apps or batch apigroup
+// - resource not in *.k8s.io group. They are custom resources and their generation are always incremental
+// (https://github.com/kubernetes/kubernetes/blob/ea0764452222146c47ec826977f49d7001b0ea8c/staging/src/k8s.io/apiextensions-apiserver/pkg/registry/customresource/strategy.go#L132)
+func allowSKipByGeneration(kind schema.GroupKind) bool {
+	if kind.Group == "apps" || kind.Group == "batch" {
+		return true
+	}
+
+	if len(strings.Split(kind.Group, ".")) >= 3 && !strings.HasSuffix(kind.Group, "k8s.io") {
+		return true
+	}
+	return false
 }
 
 func getResourceVersionGeneration(obj runtime.Object) (string, int64, error) {
@@ -108,7 +127,10 @@ func (c *WorkResourceCache) UpdateCachedResourceMetadata(required runtime.Object
 		return
 	}
 
-	c.cache[cacheKey] = cachedResource{resourceHash, resourceVersion, generation}
+	c.cache[cacheKey] = cachedResource{
+		resourceHash:    resourceHash,
+		resourceVersion: resourceVersion,
+		generation:      generation}
 	klog.V(7).Infof("updated resourceVersion of %s:%s:%s %s", name, kind, namespace, resourceVersion)
 }
 
@@ -155,6 +177,13 @@ func (c *WorkResourceCache) SafeToSkipApply(required runtime.Object, existing ru
 	return false
 }
 
+// in the circumstance that an ApplyFoo's 'required' is the same one which was previously
+// applied for a given (name, kind, namespace) and the intent of the existing resource (if any),
+// hasn't been modified since the ApplyFoo last updated that resource, then return true (we don't
+// need to reapply the resource). Otherwise return false.
+// This should be used only when:
+// - generation is incremetal upon change of the intent of the resource.
+// - the generation is honored for the fields you're concerned about.
 func (c *WorkResourceCache) SafeToSkipApplyWithGeneration(required runtime.Object, existing runtime.Object) bool {
 	if c == nil || c.cache == nil {
 		return false
@@ -166,6 +195,11 @@ func (c *WorkResourceCache) SafeToSkipApplyWithGeneration(required runtime.Objec
 	if err != nil {
 		return false
 	}
+
+	if !allowSKipByGeneration(kind) {
+		return false
+	}
+
 	cacheKey := cachedVersionKey{
 		name:      name,
 		namespace: namespace,
