@@ -322,19 +322,19 @@ func (m *ManifestWorkController) applyUnstructured(
 	existingOwners := existing.GetOwnerReferences()
 	existingLabels := existing.GetLabels()
 	existingAnnotations := existing.GetAnnotations()
-	existingFinalizers := existing.GetFinalizers()
 	modified := resourcemerge.BoolPtr(false)
 
 	resourcemerge.MergeMap(modified, &existingLabels, required.GetLabels())
 	resourcemerge.MergeMap(modified, &existingAnnotations, required.GetAnnotations())
 	resourcemerge.MergeOwnerRefs(modified, &existingOwners, required.GetOwnerReferences())
-	mergeFinalizers(modified, &existingFinalizers, required.GetFinalizers())
 
 	// Always overwrite required from existing, since required has been merged to existing
 	required.SetOwnerReferences(existingOwners)
 	required.SetLabels(existingLabels)
 	required.SetAnnotations(existingAnnotations)
-	required.SetFinalizers(existingFinalizers)
+
+	// Keep the finalizers unchanged
+	required.SetFinalizers(existing.GetFinalizers())
 
 	// Compare and update the unstrcuctured.
 	if !*modified && isSameUnstructured(required, existing) {
@@ -346,45 +346,6 @@ func (m *ManifestWorkController) applyUnstructured(
 	recorder.Eventf(fmt.Sprintf(
 		"%s Updated", required.GetKind()), "Updated %s/%s", required.GetNamespace(), required.GetName())
 	return actual, true, err
-}
-
-// mergeFinalizers merge finalizer with different elements.
-func mergeFinalizers(modified *bool, existing *[]string, required []string) {
-	if required == nil {
-		return
-	}
-	if existing == nil {
-		*existing = make([]string, 0)
-	}
-
-	for _, v := range required {
-		actualValue := v
-		removeValue := false
-
-		// if "required" contains a element with "-" as suffix, remove that
-		// value from the existing instead of replacing the value
-		if strings.HasSuffix(v, "-") {
-			removeValue = true
-			actualValue = strings.TrimRight(v, "-")
-		}
-
-		foundValue := false
-		for i, vv := range *existing {
-			if actualValue == vv {
-				foundValue = true
-				if removeValue {
-					*existing = append((*existing)[:i], (*existing)[i+1:]...)
-					*modified = true
-				}
-			}
-
-		}
-
-		if !foundValue && !removeValue {
-			*existing = append(*existing, actualValue)
-			*modified = true
-		}
-	}
 }
 
 // manageOwnerRef return a ownerref based on the resource and the deleteOption indicating whether the owneref

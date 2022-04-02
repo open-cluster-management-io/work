@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"testing"
 	"time"
 
@@ -927,7 +926,7 @@ func TestApplyUnstructred(t *testing.T) {
 			},
 		},
 		{
-			name: "merge finalizer",
+			name: "set existing finalizer",
 			existingObject: []runtime.Object{
 				func() runtime.Object {
 					obj := spoketesting.NewUnstructured(
@@ -945,18 +944,11 @@ func TestApplyUnstructred(t *testing.T) {
 			}(),
 			gvr: schema.GroupVersionResource{Version: "v1", Resource: "secrets"},
 			validateActions: func(t *testing.T, actions []clienttesting.Action) {
-				if len(actions) != 2 {
-					t.Errorf("Expect 2 actions, but have %d", len(actions))
+				if len(actions) != 1 {
+					t.Errorf("Expect 1 actions, but have %d", len(actions))
 				}
 
 				spoketesting.AssertAction(t, actions[0], "get")
-				spoketesting.AssertAction(t, actions[1], "update")
-
-				obj := actions[1].(clienttesting.UpdateActionImpl).Object.(*unstructured.Unstructured)
-				finalizers := obj.GetFinalizers()
-				if len(finalizers) != 2 {
-					t.Errorf("Expect 2 finalizer, but have %d, %v", len(finalizers), finalizers)
-				}
 			},
 		},
 		{
@@ -1006,81 +998,6 @@ func TestApplyUnstructred(t *testing.T) {
 			}
 
 			c.validateActions(t, controller.dynamicClient.Actions())
-		})
-	}
-}
-
-func TestMergeFinalizers(t *testing.T) {
-	tests := []struct {
-		name     string
-		existing []string
-		required []string
-		expected []string
-		modified bool
-	}{
-		{
-			name:     "do not update when all is nil",
-			existing: nil,
-			required: nil,
-			expected: nil,
-			modified: false,
-		},
-		{
-			name:     "update when required is nil",
-			existing: []string{"foo"},
-			required: nil,
-			expected: []string{"foo"},
-			modified: false,
-		},
-		{
-			name:     "update when existing is nil",
-			existing: nil,
-			required: []string{"foo"},
-			expected: []string{"foo"},
-			modified: true,
-		},
-		{
-			name:     "add additional to the existing with duplicate element",
-			existing: []string{"foo"},
-			required: []string{"foo", "bar"},
-			expected: []string{"foo", "bar"},
-			modified: true,
-		},
-		{
-			name:     "add additional to the existing without duplicate element",
-			existing: []string{"foo"},
-			required: []string{"bar"},
-			expected: []string{"foo", "bar"},
-			modified: true,
-		},
-		{
-			name:     "remove an existing element",
-			existing: []string{"foo", "bar"},
-			required: []string{"foo", "bar-"},
-			expected: []string{"foo"},
-			modified: true,
-		},
-		{
-			name:     "remove a non-existing element",
-			existing: []string{"foo", "bar"},
-			required: []string{"foo", "bar1-"},
-			expected: []string{"foo", "bar"},
-			modified: false,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			modified := false
-			mergeFinalizers(&modified, &test.existing, test.required)
-
-			if !reflect.DeepEqual(test.existing, test.expected) {
-				t.Errorf("name %s,expected got slice %v, but got %v", test.name, test.expected, test.existing)
-			}
-
-			if test.modified != modified {
-				t.Errorf("name %s,expected slice updates with %t, but got %t", test.name, test.modified, modified)
-			}
 		})
 	}
 }
