@@ -32,7 +32,7 @@ kustomize_dir:=$(dir $(KUSTOMIZE))
 # $2 - Dockerfile path
 # $3 - context directory for image build
 # It will generate target "image-$(1)" for builing the image an binding it as a prerequisite to target "images".
-$(call build-image,work,$(IMAGE_REGISTRY)/work,./Dockerfile,.)
+$(call build-image,work,$(IMAGE_REGISTRY)/work:$(IMAGE_TAG),./Dockerfile,.)
 
 clean:
 	$(RM) ./work
