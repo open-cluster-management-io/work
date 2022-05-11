@@ -2,6 +2,8 @@ package finalizercontroller
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	workapiv1 "open-cluster-management.io/api/work/v1"
 
@@ -9,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 
 	"github.com/openshift/library-go/pkg/controller/factory"
@@ -75,8 +78,14 @@ func (m *AddFinalizerController) syncManifestWork(ctx context.Context, originalM
 			return nil
 		}
 	}
-	// if this conflicts, we'll simply try again later
-	manifestWork.Finalizers = append(manifestWork.Finalizers, controllers.ManifestWorkFinalizer)
-	_, err := m.manifestWorkClient.Update(ctx, manifestWork, metav1.UpdateOptions{})
+
+	finalizerBytes, err := json.Marshal(append(manifestWork.Finalizers, controllers.ManifestWorkFinalizer))
+	if err != nil {
+		return err
+	}
+	patch := fmt.Sprintf("{\"metadata\": {\"finalizers\": %s}}", string(finalizerBytes))
+
+	_, err = m.manifestWorkClient.Patch(
+		ctx, manifestWork.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
 	return err
 }

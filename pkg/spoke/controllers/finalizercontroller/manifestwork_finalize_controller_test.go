@@ -2,6 +2,7 @@ package finalizercontroller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -162,10 +163,14 @@ func TestSyncManifestWorkController(t *testing.T) {
 				if len(actions) != 1 {
 					t.Errorf("Suppose 1 action for manifestwork, but got %d", len(actions))
 				}
-				spoketesting.AssertAction(t, actions[0], "update")
-				updateAction := actions[0].(clienttesting.UpdateActionImpl)
-				obj := updateAction.Object.(*workapiv1.ManifestWork)
-				if len(obj.Finalizers) != 0 {
+				spoketesting.AssertAction(t, actions[0], "patch")
+				patch := actions[0].(clienttesting.PatchAction).GetPatch()
+				work := &workapiv1.ManifestWork{}
+				err := json.Unmarshal(patch, work)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(work.Finalizers) != 0 {
 					t.Errorf("Expect finalizer is cleaned")
 				}
 			},

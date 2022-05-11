@@ -4,6 +4,7 @@ go 1.17
 
 require (
 	github.com/davecgh/go-spew v1.1.1
+	github.com/evanphx/json-patch v4.12.0+incompatible
 	github.com/onsi/ginkgo v1.16.5
 	github.com/onsi/gomega v1.19.0
 	github.com/openshift/build-machinery-go v0.0.0-20220121085309-f94edc2d6874
@@ -34,7 +35,6 @@ require (
 	github.com/coreos/go-semver v0.3.0 // indirect
 	github.com/coreos/go-systemd/v22 v22.3.2 // indirect
 	github.com/emicklei/go-restful v2.9.5+incompatible // indirect
-	github.com/evanphx/json-patch v4.12.0+incompatible // indirect
 	github.com/felixge/httpsnoop v1.0.1 // indirect
 	github.com/fsnotify/fsnotify v1.5.1 // indirect
 	github.com/ghodss/yaml v1.0.0 // indirect

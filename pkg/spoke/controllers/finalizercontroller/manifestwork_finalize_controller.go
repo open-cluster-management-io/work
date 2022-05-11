@@ -2,6 +2,7 @@ package finalizercontroller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	workv1client "open-cluster-management.io/api/client/work/clientset/versioned/typed/work/v1"
@@ -105,7 +107,17 @@ func (m *ManifestWorkFinalizeController) sync(ctx context.Context, controllerCon
 	m.rateLimiter.Forget(manifestWorkName)
 	manifestWork = manifestWork.DeepCopy()
 	helper.RemoveFinalizer(manifestWork, controllers.ManifestWorkFinalizer)
-	_, err = m.manifestWorkClient.Update(ctx, manifestWork, metav1.UpdateOptions{})
+
+	helper.RemoveFinalizer(manifestWork, controllers.AppliedManifestWorkFinalizer)
+
+	finalizerBytes, err := json.Marshal(manifestWork.Finalizers)
+	if err != nil {
+		return err
+	}
+	patch := fmt.Sprintf("{\"metadata\": {\"finalizers\": %s}}", string(finalizerBytes))
+
+	_, err = m.manifestWorkClient.Patch(
+		ctx, manifestWork.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to remove finalizer from ManifestWork %s/%s: %w", manifestWork.Namespace, manifestWork.Name, err)
 	}

@@ -3,10 +3,12 @@ package helper
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
+	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/openshift/library-go/pkg/controller/factory"
 	"github.com/openshift/library-go/pkg/operator/events"
 	"github.com/openshift/library-go/pkg/operator/resource/resourcehelper"
@@ -178,8 +180,32 @@ func updateManifestWorkStatus(
 		return newStatus, false, nil
 	}
 
-	manifestWork.Status = *newStatus
-	updatedManifestWork, err := client.UpdateStatus(ctx, manifestWork, metav1.UpdateOptions{})
+	oldData, err := json.Marshal(workapiv1.ManifestWork{
+		Status: *oldStatus,
+	})
+
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to Marshal old data for work status %s: %w", manifestWork.Name, err)
+	}
+
+	newData, err := json.Marshal(workapiv1.ManifestWork{
+		ObjectMeta: metav1.ObjectMeta{
+			UID:             manifestWork.UID,
+			ResourceVersion: manifestWork.ResourceVersion,
+		}, // to ensure they appear in the patch as preconditions
+		Status: *newStatus,
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to Marshal new data for work status %s: %w", manifestWork.Name, err)
+	}
+
+	patchBytes, err := jsonpatch.CreateMergePatch(oldData, newData)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to create patch for work %s: %w", manifestWork.Name, err)
+	}
+
+	updatedManifestWork, err := client.Patch(ctx, manifestWork.Name, types.MergePatchType, patchBytes, metav1.PatchOptions{}, "status")
+
 	if err != nil {
 		return nil, false, err
 	}

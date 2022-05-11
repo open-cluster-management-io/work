@@ -2,6 +2,7 @@ package finalizercontroller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/util/workqueue"
@@ -130,7 +132,15 @@ func (m *AppliedManifestWorkFinalizeController) syncAppliedManifestWork(ctx cont
 	m.rateLimiter.Forget(appliedManifestWork.Name)
 
 	helper.RemoveFinalizer(appliedManifestWork, controllers.AppliedManifestWorkFinalizer)
-	_, err = m.appliedManifestWorkClient.Update(ctx, appliedManifestWork, metav1.UpdateOptions{})
+
+	finalizerBytes, err := json.Marshal(appliedManifestWork.Finalizers)
+	if err != nil {
+		return err
+	}
+	patch := fmt.Sprintf("{\"metadata\": {\"finalizers\": %s}}", string(finalizerBytes))
+
+	_, err = m.appliedManifestWorkClient.Patch(
+		ctx, appliedManifestWork.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to remove finalizer from AppliedManifestWork %s: %w", appliedManifestWork.Name, err)
 	}

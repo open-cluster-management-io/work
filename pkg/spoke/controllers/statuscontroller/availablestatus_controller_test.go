@@ -2,6 +2,7 @@ package statuscontroller
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/davecgh/go-spew/spew"
@@ -37,7 +38,12 @@ func TestSyncManifestWork(t *testing.T) {
 					t.Fatal(spew.Sdump(actions))
 				}
 
-				work := actions[0].(clienttesting.UpdateAction).GetObject().(*workapiv1.ManifestWork)
+				patch := actions[0].(clienttesting.PatchAction).GetPatch()
+				work := &workapiv1.ManifestWork{}
+				err := json.Unmarshal(patch, work)
+				if err != nil {
+					t.Fatal(err)
+				}
 				if len(work.Status.Conditions) != 1 {
 					t.Fatal(spew.Sdump(actions))
 				}
@@ -82,7 +88,12 @@ func TestSyncManifestWork(t *testing.T) {
 					t.Fatal(spew.Sdump(actions))
 				}
 
-				work := actions[0].(clienttesting.UpdateAction).GetObject().(*workapiv1.ManifestWork)
+				patch := actions[0].(clienttesting.PatchAction).GetPatch()
+				work := &workapiv1.ManifestWork{}
+				err := json.Unmarshal(patch, work)
+				if err != nil {
+					t.Fatal(err)
+				}
 				if len(work.Status.ResourceStatus.Manifests) != 1 {
 					t.Fatal(spew.Sdump(work.Status.ResourceStatus.Manifests))
 				}
@@ -109,7 +120,12 @@ func TestSyncManifestWork(t *testing.T) {
 					t.Fatal(spew.Sdump(actions))
 				}
 
-				work := actions[0].(clienttesting.UpdateAction).GetObject().(*workapiv1.ManifestWork)
+				patch := actions[0].(clienttesting.PatchAction).GetPatch()
+				work := &workapiv1.ManifestWork{}
+				err := json.Unmarshal(patch, work)
+				if err != nil {
+					t.Fatal(err)
+				}
 				if len(work.Status.ResourceStatus.Manifests) != 2 {
 					t.Fatal(spew.Sdump(work.Status.ResourceStatus.Manifests))
 				}
@@ -139,7 +155,12 @@ func TestSyncManifestWork(t *testing.T) {
 					t.Fatal(spew.Sdump(actions))
 				}
 
-				work := actions[0].(clienttesting.UpdateAction).GetObject().(*workapiv1.ManifestWork)
+				patch := actions[0].(clienttesting.PatchAction).GetPatch()
+				work := &workapiv1.ManifestWork{}
+				err := json.Unmarshal(patch, work)
+				if err != nil {
+					t.Fatal(err)
+				}
 				if len(work.Status.ResourceStatus.Manifests) != 2 {
 					t.Fatal(spew.Sdump(work.Status.ResourceStatus.Manifests))
 				}
@@ -209,7 +230,12 @@ func TestStatusFeedback(t *testing.T) {
 					t.Fatal(spew.Sdump(actions))
 				}
 
-				work := actions[0].(clienttesting.UpdateAction).GetObject().(*workapiv1.ManifestWork)
+				patch := actions[0].(clienttesting.PatchAction).GetPatch()
+				work := &workapiv1.ManifestWork{}
+				err := json.Unmarshal(patch, work)
+				if err != nil {
+					t.Fatal(err)
+				}
 				if len(work.Status.ResourceStatus.Manifests) != 1 {
 					t.Fatal(spew.Sdump(work.Status.ResourceStatus.Manifests))
 				}
@@ -245,7 +271,12 @@ func TestStatusFeedback(t *testing.T) {
 					t.Fatal(spew.Sdump(actions))
 				}
 
-				work := actions[0].(clienttesting.UpdateAction).GetObject().(*workapiv1.ManifestWork)
+				patch := actions[0].(clienttesting.PatchAction).GetPatch()
+				work := &workapiv1.ManifestWork{}
+				err := json.Unmarshal(patch, work)
+				if err != nil {
+					t.Fatal(err)
+				}
 				if len(work.Status.ResourceStatus.Manifests) != 2 {
 					t.Fatal(spew.Sdump(work.Status.ResourceStatus.Manifests))
 				}
@@ -319,7 +350,12 @@ func TestStatusFeedback(t *testing.T) {
 					t.Fatal(spew.Sdump(actions))
 				}
 
-				work := actions[0].(clienttesting.UpdateAction).GetObject().(*workapiv1.ManifestWork)
+				patch := actions[0].(clienttesting.PatchAction).GetPatch()
+				work := &workapiv1.ManifestWork{}
+				err := json.Unmarshal(patch, work)
+				if err != nil {
+					t.Fatal(err)
+				}
 				if len(work.Status.ResourceStatus.Manifests) != 1 {
 					t.Fatal(spew.Sdump(work.Status.ResourceStatus.Manifests))
 				}
