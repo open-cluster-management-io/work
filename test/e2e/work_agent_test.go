@@ -187,25 +187,25 @@ var _ = ginkgo.Describe("Work agent", func() {
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 			// check if resources are applied for manifests
-			gomega.Eventually(func() bool {
+			gomega.Eventually(func() error {
 				_, err := spokeKubeClient.CoreV1().ConfigMaps(ns1).Get(context.Background(), "cm1", metav1.GetOptions{})
 				if err != nil {
-					return false
+					return err
 				}
 
 				_, err = spokeKubeClient.CoreV1().Namespaces().Get(context.Background(), ns1, metav1.GetOptions{})
 				if err != nil {
-					return false
+					return err
 				}
 
 				_, err = spokeKubeClient.CoreV1().ConfigMaps(ns1).Get(context.Background(), "cm2", metav1.GetOptions{})
 				if err != nil {
-					return false
+					return err
 				}
 
 				_, err = spokeKubeClient.CoreV1().ConfigMaps(ns2).Get(context.Background(), "cm3", metav1.GetOptions{})
-				return err == nil
-			}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+				return err
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.Succeed())
 
 			// check status conditions in manifestwork status
 			gomega.Eventually(func() bool {
@@ -352,10 +352,18 @@ var _ = ginkgo.Describe("Work agent", func() {
 			}()
 
 			// wait for deletion of manifest work
-			gomega.Eventually(func() bool {
+			gomega.Eventually(func() error {
 				_, err := hubWorkClient.WorkV1().ManifestWorks(work.Namespace).Get(context.Background(), work.Name, metav1.GetOptions{})
-				return errors.IsNotFound(err)
-			}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+				if err == nil {
+					return fmt.Errorf("resource is still deleting")
+				}
+
+				if !errors.IsNotFound(err) {
+					return err
+				}
+
+				return nil
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.Succeed())
 
 			// Once manifest work is deleted, its corresponding appliedManifestWorks should be deleted as well
 			_, err = hubWorkClient.WorkV1().AppliedManifestWorks().Get(context.Background(), appliedManifestWork.Name, metav1.GetOptions{})
@@ -374,6 +382,100 @@ var _ = ginkgo.Describe("Work agent", func() {
 			err = spokeKubeClient.CoreV1().Namespaces().Delete(context.Background(), ns2, metav1.DeleteOptions{})
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 		})
+		ginkgo.It("Should create, update deployment in manifestwork successfully", func() {
+			ginkgo.By("create manifestwork")
+
+			deployment := newDeployment("deployment1")
+
+			work := newManifestWork(clusterName, fmt.Sprintf("wdeploy1-%s", nameSuffix), deployment)
+			work, err = hubWorkClient.WorkV1().ManifestWorks(clusterName).Create(context.Background(), work, metav1.CreateOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+			// check status conditions in manifestwork status
+			gomega.Eventually(func() error {
+				work, err = hubWorkClient.WorkV1().ManifestWorks(work.Namespace).Get(context.Background(), work.Name, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+
+				if !meta.IsStatusConditionTrue(work.Status.Conditions, workapiv1.WorkApplied) {
+					return fmt.Errorf("status of Applied condition is not correct: %v", work.Status.Conditions)
+				}
+
+				if !meta.IsStatusConditionTrue(work.Status.Conditions, workapiv1.WorkAvailable) {
+					return fmt.Errorf("status of Available condition is not correct: %v", work.Status.Conditions)
+				}
+
+				return nil
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.Succeed())
+
+			//The generation of deployment should be 1
+			deploy, err := spokeKubeClient.AppsV1().Deployments("default").Get(context.Background(), "deployment1", metav1.GetOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+			gomega.Expect(deploy.Generation).Should(gomega.Equal(int64(1)))
+
+			// update manifestwork
+			newReplicas := int32(2)
+			deployment.Spec.Replicas = &newReplicas
+
+			gomega.Eventually(func() error {
+				work, err := hubWorkClient.WorkV1().ManifestWorks(work.Namespace).Get(context.Background(), work.Name, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+
+				newWork := newManifestWork(clusterName, fmt.Sprintf("wdeploy1-%s", nameSuffix), deployment)
+
+				work.Spec.Workload.Manifests = newWork.Spec.Workload.Manifests
+
+				_, err = hubWorkClient.WorkV1().ManifestWorks(work.Namespace).Update(context.Background(), work, metav1.UpdateOptions{})
+
+				return err
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.Succeed())
+
+			gomega.Eventually(func() error {
+				work, err = hubWorkClient.WorkV1().ManifestWorks(work.Namespace).Get(context.Background(), work.Name, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+
+				if !meta.IsStatusConditionTrue(work.Status.Conditions, workapiv1.WorkApplied) {
+					return fmt.Errorf("status of Applied condition is not correct: %v", work.Status.Conditions)
+				}
+
+				if !meta.IsStatusConditionTrue(work.Status.Conditions, workapiv1.WorkAvailable) {
+					return fmt.Errorf("status of Available condition is not correct: %v", work.Status.Conditions)
+				}
+
+				return nil
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.Succeed())
+
+			gomega.Eventually(func() int64 {
+				deploy, err := spokeKubeClient.AppsV1().Deployments("default").Get(context.Background(), "deployment1", metav1.GetOptions{})
+				if err != nil {
+					return 0
+				}
+
+				return deploy.Generation
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.Equal(int64(2)))
+
+			ginkgo.By("delete manifestwork")
+			err = hubWorkClient.WorkV1().ManifestWorks(work.Namespace).Delete(context.Background(), work.Name, metav1.DeleteOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+			gomega.Eventually(func() error {
+				work, err = hubWorkClient.WorkV1().ManifestWorks(work.Namespace).Get(context.Background(), work.Name, metav1.GetOptions{})
+				if err == nil {
+					return fmt.Errorf("work %s is still deleting", work.Name)
+				}
+				if !errors.IsNotFound(err) {
+					return err
+				}
+
+				return nil
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.Succeed())
+		})
 
 		ginkgo.It("Should create, delete job in manifestwork successfully", func() {
 			ginkgo.By("create manifestwork")
@@ -385,48 +487,58 @@ var _ = ginkgo.Describe("Work agent", func() {
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 			// check status conditions in manifestwork status
-			gomega.Eventually(func() bool {
+			gomega.Eventually(func() error {
 				work, err = hubWorkClient.WorkV1().ManifestWorks(work.Namespace).Get(context.Background(), work.Name, metav1.GetOptions{})
 				if err != nil {
-					return false
+					return err
 				}
 
-				// check work status condition
-				return meta.IsStatusConditionTrue(work.Status.Conditions, workapiv1.WorkApplied) &&
-					meta.IsStatusConditionTrue(work.Status.Conditions, workapiv1.WorkAvailable)
-			}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+				if !meta.IsStatusConditionTrue(work.Status.Conditions, workapiv1.WorkApplied) {
+					return fmt.Errorf("status of Applied condition is not correct: %v", work.Status.Conditions)
+				}
+
+				if !meta.IsStatusConditionTrue(work.Status.Conditions, workapiv1.WorkAvailable) {
+					return fmt.Errorf("status of Available condition is not correct: %v", work.Status.Conditions)
+				}
+
+				return nil
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.Succeed())
 
 			// Ensure pod is created
-			gomega.Eventually(func() bool {
-				pods, err := spokeKubeClient.CoreV1().Pods("default").List(context.Background(), metav1.ListOptions{})
+			gomega.Eventually(func() error {
+				pods, err := spokeKubeClient.CoreV1().Pods("default").List(context.Background(), metav1.ListOptions{
+					LabelSelector: "job=job1",
+				})
 				if err != nil {
-					return false
+					return err
 				}
 
 				if len(pods.Items) == 0 {
-					return false
+					return fmt.Errorf("no job pods created")
 				}
 
-				return true
-			}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+				return nil
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.Succeed())
 
 			ginkgo.By("delete manifestwork")
 			err = hubWorkClient.WorkV1().ManifestWorks(work.Namespace).Delete(context.Background(), work.Name, metav1.DeleteOptions{})
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 			// pods should be all cleaned.
-			gomega.Eventually(func() bool {
-				pods, err := spokeKubeClient.CoreV1().Pods("default").List(context.Background(), metav1.ListOptions{})
+			gomega.Eventually(func() error {
+				pods, err := spokeKubeClient.CoreV1().Pods("default").List(context.Background(), metav1.ListOptions{
+					LabelSelector: "job=job1",
+				})
 				if err != nil {
-					return false
+					return err
 				}
 
 				if len(pods.Items) > 0 {
-					return false
+					return fmt.Errorf("some pods are not cleaned %v", pods.Items)
 				}
 
-				return true
-			}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+				return nil
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.Succeed())
 		})
 	})
 
@@ -694,7 +806,6 @@ func newConfigmap(namespace, name string, data map[string]string, finalizers []s
 }
 
 func newJob(name string) *batchv1.Job {
-	maunualSelector := true
 	job := &batchv1.Job{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Job",
@@ -705,10 +816,6 @@ func newJob(name string) *batchv1.Job {
 			Name:      name,
 		},
 		Spec: batchv1.JobSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"job": name},
-			},
-			ManualSelector: &maunualSelector,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{"job": name},

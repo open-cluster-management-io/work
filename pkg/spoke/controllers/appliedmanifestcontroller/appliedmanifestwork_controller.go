@@ -35,6 +35,7 @@ type AppliedManifestWorkController struct {
 	appliedManifestWorkLister worklister.AppliedManifestWorkLister
 	spokeDynamicClient        dynamic.Interface
 	hubHash                   string
+	resourceCache             *helper.WorkResourceCache
 	rateLimiter               workqueue.RateLimiter
 }
 
@@ -47,6 +48,7 @@ func NewAppliedManifestWorkController(
 	manifestWorkLister worklister.ManifestWorkNamespaceLister,
 	appliedManifestWorkClient workv1client.AppliedManifestWorkInterface,
 	appliedManifestWorkInformer workinformer.AppliedManifestWorkInformer,
+	resourceCache *helper.WorkResourceCache,
 	hubHash string) factory.Controller {
 
 	controller := &AppliedManifestWorkController{
@@ -56,6 +58,7 @@ func NewAppliedManifestWorkController(
 		appliedManifestWorkLister: appliedManifestWorkInformer.Lister(),
 		spokeDynamicClient:        spokeDynamicClient,
 		hubHash:                   hubHash,
+		resourceCache:             resourceCache,
 		rateLimiter:               workqueue.NewItemExponentialFailureRateLimiter(5*time.Millisecond, 1000*time.Second),
 	}
 
@@ -163,7 +166,7 @@ func (m *AppliedManifestWorkController) syncManifestWork(
 	reason := fmt.Sprintf("it is no longer maintained by manifestwork %s", manifestWork.Name)
 
 	resourcesPendingFinalization, errs := helper.DeleteAppliedResources(
-		ctx, noLongerMaintainedResources, reason, m.spokeDynamicClient, controllerContext.Recorder(), *owner)
+		ctx, noLongerMaintainedResources, reason, m.spokeDynamicClient, m.resourceCache, controllerContext.Recorder(), *owner)
 	if len(errs) != 0 {
 		return utilerrors.NewAggregate(errs)
 	}
