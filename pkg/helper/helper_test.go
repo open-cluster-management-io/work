@@ -504,3 +504,48 @@ func TestHubHash(t *testing.T) {
 		})
 	}
 }
+
+func TestFindManifestConiguration(t *testing.T) {
+	cases := []struct {
+		name           string
+		options        []workapiv1.ManifestConfigOption
+		resourceMeta   workapiv1.ManifestResourceMeta
+		expectedOption *workapiv1.ManifestConfigOption
+	}{
+		{
+			name:           "nil options",
+			options:        nil,
+			resourceMeta:   workapiv1.ManifestResourceMeta{Group: "", Resource: "configmaps", Name: "test", Namespace: "testns"},
+			expectedOption: nil,
+		},
+		{
+			name: "options not found",
+			options: []workapiv1.ManifestConfigOption{
+				{ResourceIdentifier: workapiv1.ResourceIdentifier{Group: "", Resource: "nodes", Name: "node1"}},
+				{ResourceIdentifier: workapiv1.ResourceIdentifier{Group: "", Resource: "configmaps", Name: "test1", Namespace: "testns"}},
+			},
+			resourceMeta:   workapiv1.ManifestResourceMeta{Group: "", Resource: "configmaps", Name: "test", Namespace: "testns"},
+			expectedOption: nil,
+		},
+		{
+			name: "options found",
+			options: []workapiv1.ManifestConfigOption{
+				{ResourceIdentifier: workapiv1.ResourceIdentifier{Group: "", Resource: "nodes", Name: "node1"}},
+				{ResourceIdentifier: workapiv1.ResourceIdentifier{Group: "", Resource: "configmaps", Name: "test", Namespace: "testns"}},
+			},
+			resourceMeta: workapiv1.ManifestResourceMeta{Group: "", Resource: "configmaps", Name: "test", Namespace: "testns"},
+			expectedOption: &workapiv1.ManifestConfigOption{
+				ResourceIdentifier: workapiv1.ResourceIdentifier{Group: "", Resource: "configmaps", Name: "test", Namespace: "testns"},
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			option := FindManifestConiguration(c.resourceMeta, c.options)
+			if !equality.Semantic.DeepEqual(option, c.expectedOption) {
+				t.Errorf("expect option to be %v, but got %v", c.expectedOption, option)
+			}
+		})
+	}
+}

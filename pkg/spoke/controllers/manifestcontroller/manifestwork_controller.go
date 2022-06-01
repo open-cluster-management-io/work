@@ -2,6 +2,7 @@ package manifestcontroller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/pointer"
 
 	"github.com/openshift/library-go/pkg/controller/factory"
 	"github.com/openshift/library-go/pkg/operator/events"
@@ -162,7 +164,7 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 	resourceResults := make([]applyResult, len(manifestWork.Spec.Workload.Manifests))
 	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		resourceResults = m.applyManifests(
-			ctx, manifestWork.Spec.Workload.Manifests, manifestWork.Spec.DeleteOption, controllerContext.Recorder(), *owner, resourceResults)
+			ctx, manifestWork.Spec.Workload.Manifests, manifestWork.Spec, controllerContext.Recorder(), *owner, resourceResults)
 
 		for _, result := range resourceResults {
 			if errors.IsConflict(result.Error) {
@@ -209,7 +211,7 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 func (m *ManifestWorkController) applyManifests(
 	ctx context.Context,
 	manifests []workapiv1.Manifest,
-	deleteOption *workapiv1.DeleteOption,
+	workSpec workapiv1.ManifestWorkSpec,
 	recorder events.Recorder,
 	owner metav1.OwnerReference,
 	existingResults []applyResult) []applyResult {
@@ -218,10 +220,10 @@ func (m *ManifestWorkController) applyManifests(
 		switch {
 		case existingResults[index].Result == nil:
 			// Apply if there is not result.
-			existingResults[index] = m.applyOneManifest(ctx, index, manifest, deleteOption, recorder, owner)
+			existingResults[index] = m.applyOneManifest(ctx, index, manifest, workSpec, recorder, owner)
 		case errors.IsConflict(existingResults[index].Error):
 			// Apply if there is a resource confilct error.
-			existingResults[index] = m.applyOneManifest(ctx, index, manifest, deleteOption, recorder, owner)
+			existingResults[index] = m.applyOneManifest(ctx, index, manifest, workSpec, recorder, owner)
 		}
 	}
 
@@ -232,7 +234,7 @@ func (m *ManifestWorkController) applyOneManifest(
 	ctx context.Context,
 	index int,
 	manifest workapiv1.Manifest,
-	deleteOption *workapiv1.DeleteOption,
+	workSpec workapiv1.ManifestWorkSpec,
 	recorder events.Recorder,
 	owner metav1.OwnerReference) applyResult {
 
@@ -243,24 +245,47 @@ func (m *ManifestWorkController) applyOneManifest(
 
 	result := applyResult{}
 
-	unstructuredObj := &unstructured.Unstructured{}
-	if err := unstructuredObj.UnmarshalJSON(manifest.Raw); err != nil {
+	required := &unstructured.Unstructured{}
+	if err := required.UnmarshalJSON(manifest.Raw); err != nil {
 		result.Error = err
 		return result
 	}
 
-	resMeta, gvr, err := buildResourceMeta(index, unstructuredObj, m.restMapper)
+	resMeta, gvr, err := buildResourceMeta(index, required, m.restMapper)
 	result.resourceMeta = resMeta
 	if err != nil {
 		result.Error = err
 		return result
 	}
 
-	owner = manageOwnerRef(gvr, resMeta.Namespace, resMeta.Name, deleteOption, owner)
-	unstructuredObj.SetOwnerReferences([]metav1.OwnerReference{owner})
+	owner = manageOwnerRef(gvr, resMeta.Namespace, resMeta.Name, workSpec.DeleteOption, owner)
+	required.SetOwnerReferences([]metav1.OwnerReference{owner})
+
+	fmt.Printf("restmeat is %v\n", resMeta)
+	fmt.Printf("config is %v\n", workSpec.ManifestConfigs)
+
+	option := helper.FindManifestConiguration(resMeta, workSpec.ManifestConfigs)
+
+	// If UpdateStrategy is not set, apply resrouce directly
+	if option != nil && option.UpdateStrategy != nil {
+		switch option.UpdateStrategy.Type {
+		case workapiv1.UpdateStrategyTypeServerSideApply:
+			result.Result, result.Changed, result.Error = m.serverSideApply(ctx, gvr, required, option.UpdateStrategy.ServerSideApply, recorder)
+			return result
+		case workapiv1.UpdateStrategyTypeCreateOnly:
+			existing, err := m.spokeDynamicClient.
+				Resource(gvr).
+				Namespace(required.GetNamespace()).
+				Get(ctx, required.GetName(), metav1.GetOptions{})
+			if !errors.IsNotFound(err) {
+				result.Result, result.Error = existing, err
+				return result
+			}
+		}
+	}
 
 	results := resourceapply.ApplyDirectly(ctx, clientHolder, recorder, m.staticResourceCache, func(name string) ([]byte, error) {
-		return unstructuredObj.MarshalJSON()
+		return required.MarshalJSON()
 	}, "manifest")
 
 	result.Result = results[0].Result
@@ -271,10 +296,57 @@ func (m *ManifestWorkController) applyOneManifest(
 	// TODO we should check the certain error.
 	// Use dynamic client when scheme cannot decode manifest or typed client cannot handle the object
 	if isDecodeError(result.Error) || isUnhandledError(result.Error) || isUnsupportedError(result.Error) {
-		result.Result, result.Changed, result.Error = m.applyUnstructured(ctx, unstructuredObj, gvr, recorder)
+		result.Result, result.Changed, result.Error = m.applyUnstructured(ctx, required, gvr, recorder)
 	}
 
 	return result
+}
+
+func (m *ManifestWorkController) serverSideApply(
+	ctx context.Context,
+	gvr schema.GroupVersionResource,
+	required *unstructured.Unstructured,
+	config *workapiv1.ServerSideApplyConfig,
+	recorder events.Recorder) (*unstructured.Unstructured, bool, error) {
+	existing, err := m.spokeDynamicClient.
+		Resource(gvr).
+		Namespace(required.GetNamespace()).
+		Get(ctx, required.GetName(), metav1.GetOptions{})
+
+	switch {
+	case errors.IsNotFound(err):
+		actual, err := m.spokeDynamicClient.Resource(gvr).Namespace(required.GetNamespace()).Create(
+			ctx, resourcemerge.WithCleanLabelsAndAnnotations(required).(*unstructured.Unstructured), metav1.CreateOptions{})
+		recorder.Eventf(fmt.Sprintf(
+			"%s Created", required.GetKind()), "Created %s/%s because it was missing", required.GetNamespace(), required.GetName())
+		return actual, true, err
+	case err != nil:
+		return nil, false, err
+	}
+
+	required.SetUID(existing.GetUID())
+	required.SetResourceVersion(existing.GetResourceVersion())
+	patch, err := json.Marshal(resourcemerge.WithCleanLabelsAndAnnotations(required))
+	if err != nil {
+		return nil, false, err
+	}
+
+	force := false
+	fieldManager := "work-agent"
+
+	if config != nil {
+		force = config.Force
+		fieldManager = config.FieldManager
+	}
+
+	actual, err := m.spokeDynamicClient.
+		Resource(gvr).
+		Namespace(required.GetNamespace()).
+		Patch(ctx, required.GetName(), types.ApplyPatchType, patch, metav1.PatchOptions{FieldManager: fieldManager, Force: pointer.Bool(force)})
+	recorder.Eventf(fmt.Sprintf(
+		"%s Server Side Applied", required.GetKind()), "Patched %s/%s", required.GetNamespace(), required.GetName())
+
+	return actual, true, err
 }
 
 func (m *ManifestWorkController) applyUnstructured(

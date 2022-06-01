@@ -361,3 +361,20 @@ func NewAppliedManifestWorkOwner(appliedWork *workapiv1.AppliedManifestWork) *me
 		UID:        appliedWork.UID,
 	}
 }
+
+func FindManifestConiguration(resourceMeta workapiv1.ManifestResourceMeta, manifestOptions []workapiv1.ManifestConfigOption) *workapiv1.ManifestConfigOption {
+	identifier := workapiv1.ResourceIdentifier{
+		Group:     resourceMeta.Group,
+		Resource:  resourceMeta.Resource,
+		Namespace: resourceMeta.Namespace,
+		Name:      resourceMeta.Name,
+	}
+
+	for _, config := range manifestOptions {
+		if config.ResourceIdentifier == identifier {
+			return &config
+		}
+	}
+
+	return nil
+}

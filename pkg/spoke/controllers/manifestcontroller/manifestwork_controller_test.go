@@ -97,6 +97,7 @@ func assertManifestCondition(
 type testCase struct {
 	name                       string
 	workManifest               []*unstructured.Unstructured
+	workManifestConfig         []workapiv1.ManifestConfigOption
 	spokeObject                []runtime.Object
 	spokeDynamicObject         []runtime.Object
 	expectedWorkAction         []string
@@ -116,6 +117,7 @@ func newTestCase(name string) *testCase {
 	return &testCase{
 		name:                       name,
 		workManifest:               []*unstructured.Unstructured{},
+		workManifestConfig:         []workapiv1.ManifestConfigOption{},
 		spokeObject:                []runtime.Object{},
 		spokeDynamicObject:         []runtime.Object{},
 		expectedWorkAction:         []string{},
@@ -129,6 +131,11 @@ func newTestCase(name string) *testCase {
 
 func (t *testCase) withWorkManifest(objects ...*unstructured.Unstructured) *testCase {
 	t.workManifest = objects
+	return t
+}
+
+func (t *testCase) withManifestConfig(configs ...workapiv1.ManifestConfigOption) *testCase {
+	t.workManifestConfig = configs
 	return t
 }
 
@@ -367,6 +374,85 @@ func TestFailedToApplyResource(t *testing.T) {
 	}
 
 	tc.validate(t, controller.dynamicClient, controller.workClient, controller.kubeClient)
+}
+
+func TestUpdateStrategy(t *testing.T) {
+	cases := []*testCase{
+		newTestCase("update single resource with nil updateStrategy").
+			withWorkManifest(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val1"}})).
+			withSpokeDynamicObject(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val2"}})).
+			withManifestConfig(newManifestConfigOption("", "newobjects", "ns1", "n1", nil)).
+			withExpectedWorkAction("update").
+			withAppliedWorkAction("create").
+			withExpectedDynamicAction("get", "update").
+			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}).
+			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionTrue}),
+		newTestCase("update single resource with update updateStrategy").
+			withWorkManifest(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val1"}})).
+			withSpokeDynamicObject(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val2"}})).
+			withManifestConfig(newManifestConfigOption("", "newobjects", "ns1", "n1", &workapiv1.UpdateStrategy{Type: workapiv1.UpdateStrategyTypeUpdate})).
+			withExpectedWorkAction("update").
+			withAppliedWorkAction("create").
+			withExpectedDynamicAction("get", "update").
+			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}).
+			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionTrue}),
+		newTestCase("create single resource with updateStrategy not found").
+			withWorkManifest(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val1"}})).
+			withSpokeDynamicObject(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val2"}})).
+			withManifestConfig(newManifestConfigOption("", "newobjects", "ns1", "n2", &workapiv1.UpdateStrategy{Type: workapiv1.UpdateStrategyTypeServerSideApply})).
+			withExpectedWorkAction("update").
+			withAppliedWorkAction("create").
+			withExpectedDynamicAction("get", "update").
+			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}).
+			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionTrue}),
+		newTestCase("create single resource with server side apply updateStrategy").
+			withWorkManifest(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val1"}})).
+			withManifestConfig(newManifestConfigOption("", "newobjects", "ns1", "n1", &workapiv1.UpdateStrategy{Type: workapiv1.UpdateStrategyTypeServerSideApply})).
+			withExpectedWorkAction("update").
+			withAppliedWorkAction("create").
+			withExpectedDynamicAction("get", "create").
+			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}).
+			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionTrue}),
+		newTestCase("update single resource with server side apply updateStrategy").
+			withWorkManifest(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val1"}})).
+			withSpokeDynamicObject(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val2"}})).
+			withManifestConfig(newManifestConfigOption("", "newobjects", "ns1", "n1", &workapiv1.UpdateStrategy{Type: workapiv1.UpdateStrategyTypeServerSideApply})).
+			withExpectedWorkAction("update").
+			withAppliedWorkAction("create").
+			withExpectedDynamicAction("get", "patch").
+			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}).
+			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionTrue}),
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			work, workKey := spoketesting.NewManifestWork(0, c.workManifest...)
+			work.Spec.ManifestConfigs = c.workManifestConfig
+			work.Finalizers = []string{controllers.ManifestWorkFinalizer}
+			controller := newController(t, work, nil, spoketesting.NewFakeRestMapper()).
+				withKubeObject(c.spokeObject...).
+				withUnstructuredObject(c.spokeDynamicObject...)
+			syncContext := spoketesting.NewFakeSyncContext(t, workKey)
+			err := controller.controller.sync(context.TODO(), syncContext)
+			if err != nil {
+				t.Errorf("Should be success with no err: %v", err)
+			}
+
+			c.validate(t, controller.dynamicClient, controller.workClient, controller.kubeClient)
+		})
+	}
+}
+
+func newManifestConfigOption(group, resource, namespace, name string, strategy *workapiv1.UpdateStrategy) workapiv1.ManifestConfigOption {
+	return workapiv1.ManifestConfigOption{
+		ResourceIdentifier: workapiv1.ResourceIdentifier{
+			Resource:  resource,
+			Group:     group,
+			Namespace: namespace,
+			Name:      name,
+		},
+		UpdateStrategy: strategy,
+	}
 }
 
 // Test unstructured compare
