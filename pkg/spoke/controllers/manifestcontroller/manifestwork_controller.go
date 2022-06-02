@@ -261,9 +261,6 @@ func (m *ManifestWorkController) applyOneManifest(
 	owner = manageOwnerRef(gvr, resMeta.Namespace, resMeta.Name, workSpec.DeleteOption, owner)
 	required.SetOwnerReferences([]metav1.OwnerReference{owner})
 
-	fmt.Printf("restmeat is %v\n", resMeta)
-	fmt.Printf("config is %v\n", workSpec.ManifestConfigs)
-
 	option := helper.FindManifestConiguration(resMeta, workSpec.ManifestConfigs)
 
 	// If UpdateStrategy is not set, apply resrouce directly
@@ -308,29 +305,6 @@ func (m *ManifestWorkController) serverSideApply(
 	required *unstructured.Unstructured,
 	config *workapiv1.ServerSideApplyConfig,
 	recorder events.Recorder) (*unstructured.Unstructured, bool, error) {
-	existing, err := m.spokeDynamicClient.
-		Resource(gvr).
-		Namespace(required.GetNamespace()).
-		Get(ctx, required.GetName(), metav1.GetOptions{})
-
-	switch {
-	case errors.IsNotFound(err):
-		actual, err := m.spokeDynamicClient.Resource(gvr).Namespace(required.GetNamespace()).Create(
-			ctx, resourcemerge.WithCleanLabelsAndAnnotations(required).(*unstructured.Unstructured), metav1.CreateOptions{})
-		recorder.Eventf(fmt.Sprintf(
-			"%s Created", required.GetKind()), "Created %s/%s because it was missing", required.GetNamespace(), required.GetName())
-		return actual, true, err
-	case err != nil:
-		return nil, false, err
-	}
-
-	required.SetUID(existing.GetUID())
-	required.SetResourceVersion(existing.GetResourceVersion())
-	patch, err := json.Marshal(resourcemerge.WithCleanLabelsAndAnnotations(required))
-	if err != nil {
-		return nil, false, err
-	}
-
 	force := false
 	fieldManager := "work-agent"
 
@@ -339,12 +313,33 @@ func (m *ManifestWorkController) serverSideApply(
 		fieldManager = config.FieldManager
 	}
 
+	existing, err := m.spokeDynamicClient.
+		Resource(gvr).
+		Namespace(required.GetNamespace()).
+		Get(ctx, required.GetName(), metav1.GetOptions{})
+
+	switch {
+	case err == nil:
+		// merge ownerref by existing
+		modified := resourcemerge.BoolPtr(false)
+		existingOwners := existing.GetOwnerReferences()
+		resourcemerge.MergeOwnerRefs(modified, &existingOwners, required.GetOwnerReferences())
+		required.SetOwnerReferences(existingOwners)
+	case !errors.IsNotFound(err):
+		return nil, false, err
+	}
+
+	patch, err := json.Marshal(resourcemerge.WithCleanLabelsAndAnnotations(required))
+	if err != nil {
+		return nil, false, err
+	}
+
 	actual, err := m.spokeDynamicClient.
 		Resource(gvr).
 		Namespace(required.GetNamespace()).
 		Patch(ctx, required.GetName(), types.ApplyPatchType, patch, metav1.PatchOptions{FieldManager: fieldManager, Force: pointer.Bool(force)})
 	recorder.Eventf(fmt.Sprintf(
-		"%s Server Side Applied", required.GetKind()), "Patched %s/%s", required.GetNamespace(), required.GetName())
+		"%s Server Side Applied", required.GetKind()), "Patched %s/%s with field manager %q", required.GetNamespace(), required.GetName(), fieldManager)
 
 	return actual, true, err
 }

@@ -410,7 +410,7 @@ func TestUpdateStrategy(t *testing.T) {
 			withManifestConfig(newManifestConfigOption("", "newobjects", "ns1", "n1", &workapiv1.UpdateStrategy{Type: workapiv1.UpdateStrategyTypeServerSideApply})).
 			withExpectedWorkAction("update").
 			withAppliedWorkAction("create").
-			withExpectedDynamicAction("get", "create").
+			withExpectedDynamicAction("get", "patch").
 			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}).
 			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionTrue}),
 		newTestCase("update single resource with server side apply updateStrategy").
@@ -420,6 +420,15 @@ func TestUpdateStrategy(t *testing.T) {
 			withExpectedWorkAction("update").
 			withAppliedWorkAction("create").
 			withExpectedDynamicAction("get", "patch").
+			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}).
+			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionTrue}),
+		newTestCase("update single resource with create only updateStrategy").
+			withWorkManifest(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val1"}})).
+			withSpokeDynamicObject(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val2"}})).
+			withManifestConfig(newManifestConfigOption("", "newobjects", "ns1", "n1", &workapiv1.UpdateStrategy{Type: workapiv1.UpdateStrategyTypeCreateOnly})).
+			withExpectedWorkAction("update").
+			withAppliedWorkAction("create").
+			withExpectedDynamicAction("get").
 			withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionTrue}).
 			withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionTrue}),
 	}
@@ -432,6 +441,11 @@ func TestUpdateStrategy(t *testing.T) {
 			controller := newController(t, work, nil, spoketesting.NewFakeRestMapper()).
 				withKubeObject(c.spokeObject...).
 				withUnstructuredObject(c.spokeDynamicObject...)
+
+			// The default reactor doesn't support apply, so we need our own (trivial) reactor
+			controller.dynamicClient.PrependReactor("patch", "newobjects", func(action clienttesting.Action) (handled bool, ret runtime.Object, err error) {
+				return true, nil, nil // clusterroleaggregator drops returned objects so no point in constructing them
+			})
 			syncContext := spoketesting.NewFakeSyncContext(t, workKey)
 			err := controller.controller.sync(context.TODO(), syncContext)
 			if err != nil {
