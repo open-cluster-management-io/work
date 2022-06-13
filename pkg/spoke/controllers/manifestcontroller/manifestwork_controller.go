@@ -20,6 +20,7 @@ import (
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/pointer"
@@ -310,7 +311,9 @@ func (m *ManifestWorkController) serverSideApply(
 
 	if config != nil {
 		force = config.Force
-		fieldManager = config.FieldManager
+		if len(config.FieldManager) > 0 {
+			fieldManager = config.FieldManager
+		}
 	}
 
 	existing, err := m.spokeDynamicClient.
@@ -320,7 +323,8 @@ func (m *ManifestWorkController) serverSideApply(
 
 	switch {
 	case err == nil:
-		// merge ownerref by existing
+		// merge ownerref by existing. We need this to remove the ownerref of appliedManifestWork when user
+		// changes the deleteOption to Orphan.
 		modified := resourcemerge.BoolPtr(false)
 		existingOwners := existing.GetOwnerReferences()
 		resourcemerge.MergeOwnerRefs(modified, &existingOwners, required.GetOwnerReferences())
@@ -334,12 +338,14 @@ func (m *ManifestWorkController) serverSideApply(
 		return nil, false, err
 	}
 
+	// TODO use Apply method instead when upgrading the client-go to 0.25.x
 	actual, err := m.spokeDynamicClient.
 		Resource(gvr).
 		Namespace(required.GetNamespace()).
 		Patch(ctx, required.GetName(), types.ApplyPatchType, patch, metav1.PatchOptions{FieldManager: fieldManager, Force: pointer.Bool(force)})
+	resourceKey, _ := cache.MetaNamespaceKeyFunc(required)
 	recorder.Eventf(fmt.Sprintf(
-		"%s Server Side Applied", required.GetKind()), "Patched %s/%s with field manager %q", required.GetNamespace(), required.GetName(), fieldManager)
+		"%s Server Side Applied", required.GetKind()), "Patched with field manager %q", resourceKey, fieldManager)
 
 	return actual, true, err
 }
