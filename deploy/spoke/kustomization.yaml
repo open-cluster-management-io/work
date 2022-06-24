@@ -9,10 +9,10 @@ resources:
 - ./role.yaml
 - ./role_binding.yaml
 - ./clusterrole.yaml
-- ./clusterrole_addition.yaml
+- ./clusterrole_execution.yaml
 - ./clusterrole_binding.yaml
-- ./clusterrole_binding_addition.yaml
-- ./clusterrole_binding_addition_admin.yaml
+- ./clusterrole_binding_execution.yaml
+- ./clusterrole_binding_execution-admin.yaml
 - ./deployment.yaml
 
 images:
