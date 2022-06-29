@@ -307,7 +307,7 @@ func (m *ManifestWorkController) serverSideApply(
 	config *workapiv1.ServerSideApplyConfig,
 	recorder events.Recorder) (*unstructured.Unstructured, bool, error) {
 	force := false
-	fieldManager := "work-agent"
+	fieldManager := workapiv1.DefaultFieldManager
 
 	if config != nil {
 		force = config.Force
