@@ -310,6 +310,19 @@ var _ = ginkgo.Describe("ManifestWork Update Strategy", func() {
 			util.AssertWorkCondition(work.Namespace, work.Name, hubWorkClient, string(workapiv1.WorkApplied), metav1.ConditionTrue,
 				[]metav1.ConditionStatus{metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
 
+			gomega.Eventually(func() error {
+				deploy, err := spokeKubeClient.AppsV1().Deployments(o.SpokeClusterName).Get(context.Background(), "deploy1", metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+
+				if *deploy.Spec.Replicas != 3 {
+					return fmt.Errorf("expected replica is not correct, got %d", *deploy.Spec.Replicas)
+				}
+
+				return nil
+			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
+
 			// Update sa field will not work
 			err = unstructured.SetNestedField(object.Object, "another-sa", "spec", "template", "spec", "serviceAccountName")
 			gomega.Expect(err).ToNot(gomega.HaveOccurred())
@@ -329,5 +342,93 @@ var _ = ginkgo.Describe("ManifestWork Update Strategy", func() {
 				[]metav1.ConditionStatus{metav1.ConditionFalse}, eventuallyTimeout, eventuallyInterval)
 		})
 
+		ginkgo.It("with delete options", func() {
+			work.Spec.ManifestConfigs = []workapiv1.ManifestConfigOption{
+				{
+					ResourceIdentifier: workapiv1.ResourceIdentifier{
+						Group:     "apps",
+						Resource:  "deployments",
+						Namespace: o.SpokeClusterName,
+						Name:      "deploy1",
+					},
+					UpdateStrategy: &workapiv1.UpdateStrategy{
+						Type: workapiv1.UpdateStrategyTypeServerSideApply,
+					},
+				},
+			}
+
+			work, err = hubWorkClient.WorkV1().ManifestWorks(o.SpokeClusterName).Create(context.Background(), work, metav1.CreateOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+			util.AssertWorkCondition(work.Namespace, work.Name, hubWorkClient, string(workapiv1.WorkApplied), metav1.ConditionTrue,
+				[]metav1.ConditionStatus{metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
+
+			// Create another work with different fieldmanager
+			objCopy := object.DeepCopy()
+			// work1 does not want to own replica field
+			unstructured.RemoveNestedField(objCopy.Object, "spec", "replicas")
+			work1 := util.NewManifestWork(o.SpokeClusterName, "another", []workapiv1.Manifest{util.ToManifest(objCopy)})
+			work1.Spec.ManifestConfigs = []workapiv1.ManifestConfigOption{
+				{
+					ResourceIdentifier: workapiv1.ResourceIdentifier{
+						Group:     "apps",
+						Resource:  "deployments",
+						Namespace: o.SpokeClusterName,
+						Name:      "deploy1",
+					},
+					UpdateStrategy: &workapiv1.UpdateStrategy{
+						Type: workapiv1.UpdateStrategyTypeServerSideApply,
+						ServerSideApply: &workapiv1.ServerSideApplyConfig{
+							Force:        true,
+							FieldManager: "work-agent-another",
+						},
+					},
+				},
+			}
+
+			_, err = hubWorkClient.WorkV1().ManifestWorks(o.SpokeClusterName).Create(context.Background(), work1, metav1.CreateOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+			util.AssertWorkCondition(work1.Namespace, work1.Name, hubWorkClient, string(workapiv1.WorkApplied), metav1.ConditionTrue,
+				[]metav1.ConditionStatus{metav1.ConditionTrue}, eventuallyTimeout, eventuallyInterval)
+
+			gomega.Eventually(func() error {
+				deploy, err := spokeKubeClient.AppsV1().Deployments(o.SpokeClusterName).Get(context.Background(), "deploy1", metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+
+				if len(deploy.OwnerReferences) != 2 {
+					return fmt.Errorf("expected ownerrefs is not correct, got %v", deploy.OwnerReferences)
+				}
+
+				return nil
+			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
+
+			// update deleteOption of the first work
+			gomega.Eventually(func() error {
+				work, err = hubWorkClient.WorkV1().ManifestWorks(o.SpokeClusterName).Get(context.Background(), work.Name, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+
+				work.Spec.DeleteOption = &workapiv1.DeleteOption{PropagationPolicy: workapiv1.DeletePropagationPolicyTypeOrphan}
+				_, err = hubWorkClient.WorkV1().ManifestWorks(o.SpokeClusterName).Update(context.Background(), work, metav1.UpdateOptions{})
+				return err
+			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
+
+			gomega.Eventually(func() error {
+				deploy, err := spokeKubeClient.AppsV1().Deployments(o.SpokeClusterName).Get(context.Background(), "deploy1", metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+
+				if len(deploy.OwnerReferences) != 1 {
+					return fmt.Errorf("expected ownerrefs is not correct, got %v", deploy.OwnerReferences)
+				}
+
+				return nil
+			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
+		})
 	})
 })

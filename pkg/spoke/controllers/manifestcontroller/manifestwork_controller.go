@@ -246,6 +246,7 @@ func (m *ManifestWorkController) applyOneManifest(
 
 	result := applyResult{}
 
+	// parse the required and set resource meta
 	required := &unstructured.Unstructured{}
 	if err := required.UnmarshalJSON(manifest.Raw); err != nil {
 		result.Error = err
@@ -259,42 +260,56 @@ func (m *ManifestWorkController) applyOneManifest(
 		return result
 	}
 
-	owner = manageOwnerRef(gvr, resMeta.Namespace, resMeta.Name, workSpec.DeleteOption, owner)
-	required.SetOwnerReferences([]metav1.OwnerReference{owner})
+	// compute required ownerrefs based on delete option
+	requiredOwner := manageOwnerRef(gvr, resMeta.Namespace, resMeta.Name, workSpec.DeleteOption, owner)
 
+	// try to get the existing at first.
+	existing, existingErr := m.spokeDynamicClient.
+		Resource(gvr).
+		Namespace(required.GetNamespace()).
+		Get(ctx, required.GetName(), metav1.GetOptions{})
+	if existingErr != nil && !errors.IsNotFound(existingErr) {
+		result.Error = existingErr
+		return result
+	}
+
+	// find update strategy option.
 	option := helper.FindManifestConiguration(resMeta, workSpec.ManifestConfigs)
-
-	// If UpdateStrategy is not set, apply resrouce directly
+	// strategy is update by default
+	strategy := workapiv1.UpdateStrategy{Type: workapiv1.UpdateStrategyTypeUpdate}
 	if option != nil && option.UpdateStrategy != nil {
-		switch option.UpdateStrategy.Type {
-		case workapiv1.UpdateStrategyTypeServerSideApply:
-			result.Result, result.Changed, result.Error = m.serverSideApply(ctx, gvr, required, option.UpdateStrategy.ServerSideApply, recorder)
-			return result
-		case workapiv1.UpdateStrategyTypeCreateOnly:
-			existing, err := m.spokeDynamicClient.
-				Resource(gvr).
-				Namespace(required.GetNamespace()).
-				Get(ctx, required.GetName(), metav1.GetOptions{})
-			if !errors.IsNotFound(err) {
-				result.Result, result.Error = existing, err
-				return result
-			}
+		strategy = *option.UpdateStrategy
+	}
+
+	// apply resource based on update strategy
+	switch strategy.Type {
+	case workapiv1.UpdateStrategyTypeServerSideApply:
+		result.Result, result.Changed, result.Error = m.serverSideApply(ctx, gvr, required, option.UpdateStrategy.ServerSideApply, recorder)
+	case workapiv1.UpdateStrategyTypeCreateOnly, workapiv1.UpdateStrategyTypeUpdate:
+		if strategy.Type == workapiv1.UpdateStrategyTypeCreateOnly && existingErr == nil {
+			result.Result = existing
+			break
+		}
+		required.SetOwnerReferences([]metav1.OwnerReference{requiredOwner})
+		results := resourceapply.ApplyDirectly(ctx, clientHolder, recorder, m.staticResourceCache, func(name string) ([]byte, error) {
+			return required.MarshalJSON()
+		}, "manifest")
+
+		result.Result = results[0].Result
+		result.Changed = results[0].Changed
+		result.Error = results[0].Error
+
+		// Try apply with dynamic client if the manifest cannot be decoded by scheme or typed client is not found
+		// TODO we should check the certain error.
+		// Use dynamic client when scheme cannot decode manifest or typed client cannot handle the object
+		if isDecodeError(result.Error) || isUnhandledError(result.Error) || isUnsupportedError(result.Error) {
+			result.Result, result.Changed, result.Error = m.applyUnstructured(ctx, existing, required, gvr, recorder)
 		}
 	}
 
-	results := resourceapply.ApplyDirectly(ctx, clientHolder, recorder, m.staticResourceCache, func(name string) ([]byte, error) {
-		return required.MarshalJSON()
-	}, "manifest")
-
-	result.Result = results[0].Result
-	result.Changed = results[0].Changed
-	result.Error = results[0].Error
-
-	// Try apply with dynamic client if the manifest cannot be decoded by scheme or typed client is not found
-	// TODO we should check the certain error.
-	// Use dynamic client when scheme cannot decode manifest or typed client cannot handle the object
-	if isDecodeError(result.Error) || isUnhandledError(result.Error) || isUnsupportedError(result.Error) {
-		result.Result, result.Changed, result.Error = m.applyUnstructured(ctx, required, gvr, recorder)
+	// patch the ownerref
+	if result.Error == nil {
+		result.Error = helper.ApplyOwnerReferences(ctx, m.spokeDynamicClient, gvr, result.Result, requiredOwner)
 	}
 
 	return result
@@ -316,23 +331,6 @@ func (m *ManifestWorkController) serverSideApply(
 		}
 	}
 
-	existing, err := m.spokeDynamicClient.
-		Resource(gvr).
-		Namespace(required.GetNamespace()).
-		Get(ctx, required.GetName(), metav1.GetOptions{})
-
-	switch {
-	case err == nil:
-		// merge ownerref by existing. We need this to remove the ownerref of appliedManifestWork when user
-		// changes the deleteOption to Orphan.
-		modified := resourcemerge.BoolPtr(false)
-		existingOwners := existing.GetOwnerReferences()
-		resourcemerge.MergeOwnerRefs(modified, &existingOwners, required.GetOwnerReferences())
-		required.SetOwnerReferences(existingOwners)
-	case !errors.IsNotFound(err):
-		return nil, false, err
-	}
-
 	patch, err := json.Marshal(resourcemerge.WithCleanLabelsAndAnnotations(required))
 	if err != nil {
 		return nil, false, err
@@ -345,30 +343,22 @@ func (m *ManifestWorkController) serverSideApply(
 		Patch(ctx, required.GetName(), types.ApplyPatchType, patch, metav1.PatchOptions{FieldManager: fieldManager, Force: pointer.Bool(force)})
 	resourceKey, _ := cache.MetaNamespaceKeyFunc(required)
 	recorder.Eventf(fmt.Sprintf(
-		"%s Server Side Applied", required.GetKind()), "Patched with field manager %q", resourceKey, fieldManager)
+		"Server Side Applied %s %s", required.GetKind(), resourceKey), "Patched with field manager %s", fieldManager)
 
 	return actual, true, err
 }
 
 func (m *ManifestWorkController) applyUnstructured(
 	ctx context.Context,
-	required *unstructured.Unstructured,
+	existing, required *unstructured.Unstructured,
 	gvr schema.GroupVersionResource,
 	recorder events.Recorder) (*unstructured.Unstructured, bool, error) {
-	existing, err := m.spokeDynamicClient.
-		Resource(gvr).
-		Namespace(required.GetNamespace()).
-		Get(ctx, required.GetName(), metav1.GetOptions{})
-
-	switch {
-	case errors.IsNotFound(err):
+	if existing == nil {
 		actual, err := m.spokeDynamicClient.Resource(gvr).Namespace(required.GetNamespace()).Create(
 			ctx, resourcemerge.WithCleanLabelsAndAnnotations(required).(*unstructured.Unstructured), metav1.CreateOptions{})
 		recorder.Eventf(fmt.Sprintf(
 			"%s Created", required.GetKind()), "Created %s/%s because it was missing", required.GetNamespace(), required.GetName())
 		return actual, true, err
-	case err != nil:
-		return nil, false, err
 	}
 
 	// Merge OwnerRefs, Labels, and Annotations.
