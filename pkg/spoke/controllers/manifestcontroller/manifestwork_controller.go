@@ -10,7 +10,7 @@ import (
 
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/apimachinery/pkg/api/equality"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -29,6 +29,7 @@ import (
 	"github.com/openshift/library-go/pkg/operator/events"
 	"github.com/openshift/library-go/pkg/operator/resource/resourceapply"
 	"github.com/openshift/library-go/pkg/operator/resource/resourcemerge"
+	"github.com/pkg/errors"
 	workv1client "open-cluster-management.io/api/client/work/clientset/versioned/typed/work/v1"
 	workinformer "open-cluster-management.io/api/client/work/informers/externalversions/work/v1"
 	worklister "open-cluster-management.io/api/client/work/listers/work/v1"
@@ -59,6 +60,14 @@ type applyResult struct {
 	resourceapply.ApplyResult
 
 	resourceMeta workapiv1.ManifestResourceMeta
+}
+
+type serverSideApplyConflictError struct {
+	ssaErr error
+}
+
+func (e *serverSideApplyConflictError) Error() string {
+	return e.ssaErr.Error()
 }
 
 // NewManifestWorkController returns a ManifestWorkController
@@ -108,7 +117,7 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 	klog.V(4).Infof("Reconciling ManifestWork %q", manifestWorkName)
 
 	manifestWork, err := m.manifestWorkLister.Get(manifestWorkName)
-	if errors.IsNotFound(err) {
+	if apierrors.IsNotFound(err) {
 		// work not found, could have been deleted, do nothing.
 		return nil
 	}
@@ -138,7 +147,7 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 	appliedManifestWorkName := fmt.Sprintf("%s-%s", m.hubHash, manifestWork.Name)
 	appliedManifestWork, err := m.appliedManifestWorkLister.Get(appliedManifestWorkName)
 	switch {
-	case errors.IsNotFound(err):
+	case apierrors.IsNotFound(err):
 		appliedManifestWork = &workapiv1.AppliedManifestWork{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:       appliedManifestWorkName,
@@ -168,7 +177,7 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 			ctx, manifestWork.Spec.Workload.Manifests, manifestWork.Spec, controllerContext.Recorder(), *owner, resourceResults)
 
 		for _, result := range resourceResults {
-			if errors.IsConflict(result.Error) {
+			if apierrors.IsConflict(result.Error) {
 				return result.Error
 			}
 		}
@@ -181,7 +190,9 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 
 	newManifestConditions := []workapiv1.ManifestCondition{}
 	for _, result := range resourceResults {
-		if result.Error != nil {
+		// ignore server side apply conflict error since it cannot be resolved by error fallback.
+		var ssaConflict *serverSideApplyConflictError
+		if result.Error != nil && !errors.As(result.Error, &ssaConflict) {
 			errs = append(errs, result.Error)
 		}
 
@@ -222,7 +233,7 @@ func (m *ManifestWorkController) applyManifests(
 		case existingResults[index].Result == nil:
 			// Apply if there is not result.
 			existingResults[index] = m.applyOneManifest(ctx, index, manifest, workSpec, recorder, owner)
-		case errors.IsConflict(existingResults[index].Error):
+		case apierrors.IsConflict(existingResults[index].Error):
 			// Apply if there is a resource confilct error.
 			existingResults[index] = m.applyOneManifest(ctx, index, manifest, workSpec, recorder, owner)
 		}
@@ -260,18 +271,18 @@ func (m *ManifestWorkController) applyOneManifest(
 		return result
 	}
 
-	// compute required ownerrefs based on delete option
-	requiredOwner := manageOwnerRef(gvr, resMeta.Namespace, resMeta.Name, workSpec.DeleteOption, owner)
-
 	// try to get the existing at first.
 	existing, existingErr := m.spokeDynamicClient.
 		Resource(gvr).
 		Namespace(required.GetNamespace()).
 		Get(ctx, required.GetName(), metav1.GetOptions{})
-	if existingErr != nil && !errors.IsNotFound(existingErr) {
+	if existingErr != nil && !apierrors.IsNotFound(existingErr) {
 		result.Error = existingErr
 		return result
 	}
+
+	// compute required ownerrefs based on delete option
+	requiredOwner := manageOwnerRef(gvr, resMeta.Namespace, resMeta.Name, workSpec.DeleteOption, owner)
 
 	// find update strategy option.
 	option := helper.FindManifestConiguration(resMeta, workSpec.ManifestConfigs)
@@ -307,7 +318,7 @@ func (m *ManifestWorkController) applyOneManifest(
 		}
 	}
 
-	// patch the ownerref
+	// patch the ownerref no matter apply fails or not.
 	if result.Error == nil {
 		result.Error = helper.ApplyOwnerReferences(ctx, m.spokeDynamicClient, gvr, result.Result, requiredOwner)
 	}
@@ -344,6 +355,10 @@ func (m *ManifestWorkController) serverSideApply(
 	resourceKey, _ := cache.MetaNamespaceKeyFunc(required)
 	recorder.Eventf(fmt.Sprintf(
 		"Server Side Applied %s %s", required.GetKind(), resourceKey), "Patched with field manager %s", fieldManager)
+
+	if apierrors.IsConflict(err) {
+		return actual, true, &serverSideApplyConflictError{ssaErr: err}
+	}
 
 	return actual, true, err
 }

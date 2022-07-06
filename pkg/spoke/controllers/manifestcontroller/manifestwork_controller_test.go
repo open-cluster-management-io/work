@@ -9,6 +9,7 @@ import (
 	"github.com/openshift/library-go/pkg/operator/resource/resourceapply"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -459,6 +460,37 @@ func TestUpdateStrategy(t *testing.T) {
 			c.validate(t, controller.dynamicClient, controller.workClient, controller.kubeClient)
 		})
 	}
+}
+
+func TestServerSideApplyConflict(t *testing.T) {
+	testCase := newTestCase("update single resource with server side apply updateStrategy").
+		withWorkManifest(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val1"}})).
+		withSpokeDynamicObject(spoketesting.NewUnstructuredWithContent("v1", "NewObject", "ns1", "n1", map[string]interface{}{"spec": map[string]interface{}{"key1": "val2"}})).
+		withManifestConfig(newManifestConfigOption("", "newobjects", "ns1", "n1", &workapiv1.UpdateStrategy{Type: workapiv1.UpdateStrategyTypeServerSideApply})).
+		withExpectedWorkAction("update").
+		withAppliedWorkAction("create").
+		withExpectedDynamicAction("get", "patch").
+		withExpectedManifestCondition(expectedCondition{string(workapiv1.ManifestApplied), metav1.ConditionFalse}).
+		withExpectedWorkCondition(expectedCondition{string(workapiv1.WorkApplied), metav1.ConditionFalse})
+
+	work, workKey := spoketesting.NewManifestWork(0, testCase.workManifest...)
+	work.Spec.ManifestConfigs = testCase.workManifestConfig
+	work.Finalizers = []string{controllers.ManifestWorkFinalizer}
+	controller := newController(t, work, nil, spoketesting.NewFakeRestMapper()).
+		withKubeObject(testCase.spokeObject...).
+		withUnstructuredObject(testCase.spokeDynamicObject...)
+
+	// The default reactor doesn't support apply, so we need our own (trivial) reactor
+	controller.dynamicClient.PrependReactor("patch", "newobjects", func(action clienttesting.Action) (handled bool, ret runtime.Object, err error) {
+		return true, nil, errors.NewConflict(schema.GroupResource{Resource: "newobjects"}, "n1", fmt.Errorf("conflict error"))
+	})
+	syncContext := spoketesting.NewFakeSyncContext(t, workKey)
+	err := controller.controller.sync(context.TODO(), syncContext)
+	if err != nil {
+		t.Errorf("Should be success with no err: %v", err)
+	}
+
+	testCase.validate(t, controller.dynamicClient, controller.workClient, controller.kubeClient)
 }
 
 func newManifestConfigOption(group, resource, namespace, name string, strategy *workapiv1.UpdateStrategy) workapiv1.ManifestConfigOption {
