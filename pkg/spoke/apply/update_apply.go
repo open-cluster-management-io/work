@@ -3,6 +3,7 @@ package apply
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/openshift/library-go/pkg/operator/events"
@@ -13,6 +14,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -42,9 +44,8 @@ func (c *UpdateApply) Apply(
 	gvr schema.GroupVersionResource,
 	required *unstructured.Unstructured,
 	owner metav1.OwnerReference,
-	applyOption *workapiv1.ManifestConfigOption,
-	recorder events.Recorder) Result {
-	result := Result{}
+	_ *workapiv1.ManifestConfigOption,
+	recorder events.Recorder) (runtime.Object, error) {
 
 	clientHolder := resourceapply.NewClientHolder().
 		WithAPIExtensionsClient(c.apiExtensionClient).
@@ -56,18 +57,23 @@ func (c *UpdateApply) Apply(
 		return required.MarshalJSON()
 	}, "manifest")
 
-	result.Result = results[0].Result
-	result.Changed = results[0].Changed
-	result.Error = results[0].Error
+	obj, err := results[0].Result, results[0].Error
 
 	// Try apply with dynamic client if the manifest cannot be decoded by scheme or typed client is not found
 	// TODO we should check the certain error.
 	// Use dynamic client when scheme cannot decode manifest or typed client cannot handle the object
-	if isDecodeError(result.Error) || isUnhandledError(result.Error) || isUnsupportedError(result.Error) {
-		result.Result, result.Changed, result.Error = c.applyUnstructured(ctx, required, gvr, recorder)
+	if isDecodeError(err) || isUnhandledError(err) || isUnsupportedError(err) {
+		obj, _, err = c.applyUnstructured(ctx, required, gvr, recorder)
 	}
 
-	return result
+	if err == nil && (!reflect.ValueOf(obj).IsValid() || reflect.ValueOf(obj).IsNil()) {
+		// ApplyDirectly may return a nil Result when there is no error, we get the latest object for the Result
+		return c.dynamicClient.
+			Resource(gvr).
+			Namespace(required.GetNamespace()).
+			Get(ctx, required.GetName(), metav1.GetOptions{})
+	}
+	return obj, err
 }
 
 func (c *UpdateApply) applyUnstructured(

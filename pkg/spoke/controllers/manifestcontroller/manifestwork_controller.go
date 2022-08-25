@@ -42,9 +42,17 @@ type ManifestWorkController struct {
 	manifestWorkLister        worklister.ManifestWorkNamespaceLister
 	appliedManifestWorkClient workv1client.AppliedManifestWorkInterface
 	appliedManifestWorkLister worklister.AppliedManifestWorkLister
+	spokeDynamicClient        dynamic.Interface
 	hubHash                   string
 	restMapper                meta.RESTMapper
 	appliers                  *apply.Appliers
+}
+
+type applyResult struct {
+	Result runtime.Object
+	Error  error
+
+	resourceMeta workapiv1.ManifestResourceMeta
 }
 
 // NewManifestWorkController returns a ManifestWorkController
@@ -67,6 +75,7 @@ func NewManifestWorkController(
 		manifestWorkLister:        manifestWorkLister,
 		appliedManifestWorkClient: appliedManifestWorkClient,
 		appliedManifestWorkLister: appliedManifestWorkInformer.Lister(),
+		spokeDynamicClient:        spokeDynamicClient,
 		hubHash:                   hubHash,
 		restMapper:                restMapper,
 
@@ -144,7 +153,7 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 
 	errs := []error{}
 	// Apply resources on spoke cluster.
-	resourceResults := make([]apply.Result, len(manifestWork.Spec.Workload.Manifests))
+	resourceResults := make([]applyResult, len(manifestWork.Spec.Workload.Manifests))
 	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		resourceResults = m.applyManifests(
 			ctx, manifestWork.Spec.Workload.Manifests, manifestWork.Spec, controllerContext.Recorder(), *owner, resourceResults)
@@ -170,7 +179,7 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 		}
 
 		manifestCondition := workapiv1.ManifestCondition{
-			ResourceMeta: result.ResourceMeta,
+			ResourceMeta: result.resourceMeta,
 			Conditions:   []metav1.Condition{},
 		}
 
@@ -199,12 +208,12 @@ func (m *ManifestWorkController) applyManifests(
 	workSpec workapiv1.ManifestWorkSpec,
 	recorder events.Recorder,
 	owner metav1.OwnerReference,
-	existingResults []apply.Result) []apply.Result {
+	existingResults []applyResult) []applyResult {
 
 	for index, manifest := range manifests {
 		switch {
 		case existingResults[index].Result == nil:
-			// Apply if there is not result.
+			// Apply if there is no result.
 			existingResults[index] = m.applyOneManifest(ctx, index, manifest, workSpec, recorder, owner)
 		case apierrors.IsConflict(existingResults[index].Error):
 			// Apply if there is a resource confilct error.
@@ -221,9 +230,9 @@ func (m *ManifestWorkController) applyOneManifest(
 	manifest workapiv1.Manifest,
 	workSpec workapiv1.ManifestWorkSpec,
 	recorder events.Recorder,
-	owner metav1.OwnerReference) apply.Result {
+	owner metav1.OwnerReference) applyResult {
 
-	result := apply.Result{}
+	result := applyResult{}
 
 	// parse the required and set resource meta
 	required := &unstructured.Unstructured{}
@@ -233,7 +242,7 @@ func (m *ManifestWorkController) applyOneManifest(
 	}
 
 	resMeta, gvr, err := buildResourceMeta(index, required, m.restMapper)
-	result.ResourceMeta = resMeta
+	result.resourceMeta = resMeta
 	if err != nil {
 		result.Error = err
 		return result
@@ -251,8 +260,12 @@ func (m *ManifestWorkController) applyOneManifest(
 	}
 
 	applier := m.appliers.GetApplier(strategy.Type)
-	result = applier.Apply(ctx, gvr, required, requiredOwner, option, recorder)
-	result.ResourceMeta = resMeta
+	result.Result, result.Error = applier.Apply(ctx, gvr, required, requiredOwner, option, recorder)
+
+	// patch the ownerref
+	if result.Error == nil {
+		result.Error = helper.ApplyOwnerReferences(ctx, m.spokeDynamicClient, gvr, result.Result, requiredOwner)
+	}
 
 	return result
 }
@@ -363,7 +376,7 @@ func allInCondition(conditionType string, manifests []workapiv1.ManifestConditio
 	return exists, exists
 }
 
-func buildAppliedStatusCondition(result apply.Result) metav1.Condition {
+func buildAppliedStatusCondition(result applyResult) metav1.Condition {
 	if result.Error != nil {
 		return metav1.Condition{
 			Type:    string(workapiv1.ManifestApplied),

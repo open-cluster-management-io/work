@@ -9,13 +9,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/utils/pointer"
 	workapiv1 "open-cluster-management.io/api/work/v1"
-	"open-cluster-management.io/work/pkg/helper"
 )
 
 type ServerSideApply struct {
@@ -40,11 +40,10 @@ func (c *ServerSideApply) Apply(
 	required *unstructured.Unstructured,
 	owner metav1.OwnerReference,
 	applyOption *workapiv1.ManifestConfigOption,
-	recorder events.Recorder) Result {
+	recorder events.Recorder) (runtime.Object, error) {
 
 	force := false
 	fieldManager := workapiv1.DefaultFieldManager
-	result := Result{}
 
 	if applyOption.UpdateStrategy.ServerSideApply != nil {
 		force = applyOption.UpdateStrategy.ServerSideApply.Force
@@ -55,27 +54,24 @@ func (c *ServerSideApply) Apply(
 
 	patch, err := json.Marshal(required)
 	if err != nil {
-		result.Error = err
-		return result
+		return nil, err
 	}
 
 	// TODO use Apply method instead when upgrading the client-go to 0.25.x
-	result.Result, result.Error = c.client.
+	obj, err := c.client.
 		Resource(gvr).
 		Namespace(required.GetNamespace()).
 		Patch(ctx, required.GetName(), types.ApplyPatchType, patch, metav1.PatchOptions{FieldManager: fieldManager, Force: pointer.Bool(force)})
 	resourceKey, _ := cache.MetaNamespaceKeyFunc(required)
-	recorder.Eventf(fmt.Sprintf(
-		"Server Side Applied %s %s", required.GetKind(), resourceKey), "Patched with field manager %s", fieldManager)
-
-	if errors.IsConflict(result.Error) {
-		result.Error = &ServerSideApplyConflictError{ssaErr: err}
+	if err != nil {
+		recorder.Eventf(fmt.Sprintf(
+			"Server Side Applied %s %s", required.GetKind(), resourceKey), "Patched with field manager %s", fieldManager)
 	}
 
-	if result.Error == nil {
-		result.Error = helper.ApplyOwnerReferences(ctx, c.client, gvr, result.Result, owner)
+	if errors.IsConflict(err) {
+		return obj, &ServerSideApplyConflictError{ssaErr: err}
 	}
 
-	return result
+	return obj, err
 
 }

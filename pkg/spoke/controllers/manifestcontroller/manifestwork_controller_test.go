@@ -74,6 +74,7 @@ func (t *testController) withKubeObject(objects ...runtime.Object) *testControll
 func (t *testController) withUnstructuredObject(objects ...runtime.Object) *testController {
 	scheme := runtime.NewScheme()
 	dynamicClient := fakedynamic.NewSimpleDynamicClient(scheme, objects...)
+	t.controller.spokeDynamicClient = dynamicClient
 	t.dynamicClient = dynamicClient
 	return t
 }
