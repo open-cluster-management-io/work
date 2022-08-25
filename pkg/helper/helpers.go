@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -373,6 +374,11 @@ func FindManifestConiguration(resourceMeta workapiv1.ManifestResourceMeta, manif
 }
 
 func ApplyOwnerReferences(ctx context.Context, dynamicClient dynamic.Interface, gvr schema.GroupVersionResource, existing runtime.Object, requiredOwner metav1.OwnerReference) error {
+	// skip if the existing object is nil
+	if existing == nil || reflect.ValueOf(existing).IsNil() {
+		return nil
+	}
+
 	accessor, err := meta.Accessor(existing)
 	if err != nil {
 		return fmt.Errorf("type %t cannot be accessed: %v", existing, err)

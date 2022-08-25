@@ -3,6 +3,7 @@ package helper
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -554,43 +556,60 @@ func TestFindManifestConiguration(t *testing.T) {
 }
 
 func TestApplyOwnerReferences(t *testing.T) {
+	var nilUnstructured *unstructured.Unstructured
 	testCases := []struct {
 		name     string
-		existing []metav1.OwnerReference
+		existing runtime.Object
 		required metav1.OwnerReference
 
 		wantPatch  bool
 		wantOwners []metav1.OwnerReference
 	}{
 		{
+			name:      "existing is nil",
+			wantPatch: false,
+		},
+		{
+			name:      "existing is nil Unstructured",
+			existing:  nilUnstructured,
+			wantPatch: false,
+		},
+		{
 			name:       "add a owner",
+			existing:   newSecret("ns1", "n1", false, "ns1-n1"),
 			required:   metav1.OwnerReference{Name: "n1", UID: "a"},
 			wantPatch:  true,
 			wantOwners: []metav1.OwnerReference{{Name: "n1", UID: "a"}},
 		},
 		{
 			name:       "append a owner",
-			existing:   []metav1.OwnerReference{{Name: "n2", UID: "b"}},
+			existing:   newSecret("ns1", "n1", false, "ns1-n1", metav1.OwnerReference{Name: "n2", UID: "b"}),
 			required:   metav1.OwnerReference{Name: "n1", UID: "a"},
 			wantPatch:  true,
 			wantOwners: []metav1.OwnerReference{{Name: "n2", UID: "b"}, {Name: "n1", UID: "a"}},
 		},
 		{
-			name:       "remove a owner",
-			existing:   []metav1.OwnerReference{{Name: "n2", UID: "b"}, {Name: "n1", UID: "a"}},
+			name: "remove a owner",
+			existing: newSecret("ns1", "n1", false, "ns1-n1",
+				metav1.OwnerReference{Name: "n2", UID: "b"},
+				metav1.OwnerReference{Name: "n1", UID: "a"}),
 			required:   metav1.OwnerReference{Name: "n1", UID: "a-"},
 			wantPatch:  true,
 			wantOwners: []metav1.OwnerReference{{Name: "n2", UID: "b"}},
 		},
 		{
-			name:      "remove a non existing owner",
-			existing:  []metav1.OwnerReference{{Name: "n2", UID: "b"}, {Name: "n1", UID: "a"}},
+			name: "remove a non existing owner",
+			existing: newSecret("ns1", "n1", false, "ns1-n1",
+				metav1.OwnerReference{Name: "n2", UID: "b"},
+				metav1.OwnerReference{Name: "n1", UID: "a"}),
 			required:  metav1.OwnerReference{Name: "n3", UID: "c-"},
 			wantPatch: false,
 		},
 		{
-			name:      "append an existing owner",
-			existing:  []metav1.OwnerReference{{Name: "n2", UID: "b"}, {Name: "n1", UID: "a"}},
+			name: "append an existing owner",
+			existing: newSecret("ns1", "n1", false, "ns1-n1",
+				metav1.OwnerReference{Name: "n2", UID: "b"},
+				metav1.OwnerReference{Name: "n1", UID: "a"}),
 			required:  metav1.OwnerReference{Name: "n1", UID: "a"},
 			wantPatch: false,
 		},
@@ -603,10 +622,13 @@ func TestApplyOwnerReferences(t *testing.T) {
 
 	for _, c := range testCases {
 		t.Run(c.name, func(t *testing.T) {
-			object := newSecret("ns1", "n1", false, "ns1-n1", c.existing...)
-			fakeClient := fakedynamic.NewSimpleDynamicClient(scheme, object)
+			objs := []runtime.Object{}
+			if c.existing != nil && !reflect.ValueOf(c.existing).IsNil() {
+				objs = append(objs, c.existing)
+			}
+			fakeClient := fakedynamic.NewSimpleDynamicClient(scheme, objs...)
 			gvr := schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
-			err := ApplyOwnerReferences(context.TODO(), fakeClient, gvr, object, c.required)
+			err := ApplyOwnerReferences(context.TODO(), fakeClient, gvr, c.existing, c.required)
 			if err != nil {
 				t.Errorf("apply err: %v", err)
 			}
