@@ -15,4 +15,6 @@ rules:
 - apiGroups: ["work.open-cluster-management.io"]
   resources: ["appliedmanifestworks/finalizers"]
   verbs: ["update"]
-  
+- apiGroups: ["authorization.k8s.io"]
+  resources: ["subjectaccessreviews"]
+  verbs: ["create"]
