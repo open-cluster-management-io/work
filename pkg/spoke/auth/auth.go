@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
@@ -31,6 +31,19 @@ type ExecutorValidator interface {
 	// if there is no permission will return a kubernetes forbidden error.
 	Validate(ctx context.Context, executor *workapiv1.ManifestWorkExecutor,
 		gvr schema.GroupVersionResource, namespace, name string, action ExecuteAction) error
+}
+
+type NotAllowedError struct {
+	Err         error
+	RequeueTime time.Duration
+}
+
+func (e *NotAllowedError) Error() string {
+	err := e.Err.Error()
+	if e.RequeueTime > 0 {
+		err = fmt.Sprintf("%s, will try again in %s", err, e.RequeueTime.String())
+	}
+	return err
 }
 
 func NewExecutorValidator(kubeClient kubernetes.Interface) ExecutorValidator {
@@ -61,7 +74,7 @@ func (v *sarValidator) Validate(ctx context.Context, executor *workapiv1.Manifes
 	var verbs []string
 	switch action {
 	case ApplyAction:
-		verbs = []string{"create", "update", "patch", "get", "list"}
+		verbs = []string{"create", "update", "patch", "get"}
 	case DeleteAction:
 		verbs = []string{"delete"}
 	default:
@@ -83,10 +96,11 @@ func (v *sarValidator) Validate(ctx context.Context, executor *workapiv1.Manifes
 	}
 
 	if !allowed {
-		return errors.NewForbidden(schema.GroupResource{
-			Group:    resource.Group,
-			Resource: resource.Resource,
-		}, resource.Name, fmt.Errorf("not allowed to %s the resource", strings.ToLower(string(action))))
+		return &NotAllowedError{
+			Err: fmt.Errorf("not allowed to %s the resource %s %s, name: %s",
+				strings.ToLower(string(action)), resource.Group, resource.Resource, resource.Name),
+			RequeueTime: 60 * time.Second,
+		}
 	}
 
 	return nil

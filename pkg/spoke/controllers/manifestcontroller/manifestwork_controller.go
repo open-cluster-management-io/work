@@ -18,7 +18,6 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/retry"
-	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 
 	"github.com/openshift/library-go/pkg/controller/factory"
@@ -35,7 +34,10 @@ import (
 	"open-cluster-management.io/work/pkg/spoke/controllers"
 )
 
-var ResyncInterval = 5 * time.Minute
+var (
+	ResyncInterval     = 5 * time.Minute
+	MaxRequeueDuration = 24 * time.Hour
+)
 
 // ManifestWorkController is to reconcile the workload resources
 // fetched from hub cluster on spoke cluster.
@@ -49,7 +51,6 @@ type ManifestWorkController struct {
 	restMapper                meta.RESTMapper
 	appliers                  *apply.Appliers
 	validator                 auth.ExecutorValidator
-	rateLimiter               workqueue.RateLimiter
 }
 
 type applyResult struct {
@@ -84,7 +85,6 @@ func NewManifestWorkController(
 		restMapper:                restMapper,
 		appliers:                  apply.NewAppliers(spokeDynamicClient, spokeKubeClient, spokeAPIExtensionClient),
 		validator:                 auth.NewExecutorValidator(spokeKubeClient),
-		rateLimiter:               workqueue.NewItemExponentialFailureRateLimiter(30*time.Second, 5*time.Minute),
 	}
 
 	return factory.New().
@@ -177,7 +177,7 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 	}
 
 	newManifestConditions := []workapiv1.ManifestCondition{}
-	needRequeue := false
+	var requeueTime = MaxRequeueDuration
 	for _, result := range resourceResults {
 		manifestCondition := workapiv1.ManifestCondition{
 			ResourceMeta: result.resourceMeta,
@@ -189,12 +189,16 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 
 		newManifestConditions = append(newManifestConditions, manifestCondition)
 
-		if apierrors.IsForbidden(result.Error) {
-			// If it is a forbidden error, after the condition is constructed, we set the error to nil
-			// and requeue the item after a little while
-			needRequeue = true
+		// If it is a forbidden error, after the condition is constructed, we set the error to nil
+		// and requeue the item
+		var authError = &auth.NotAllowedError{}
+		if errors.As(result.Error, &authError) {
 			klog.V(2).Infof("apply work %s fails with err: %v", manifestWorkName, result.Error)
 			result.Error = nil
+
+			if authError.RequeueTime < requeueTime {
+				requeueTime = authError.RequeueTime
+			}
 		}
 
 		// ignore server side apply conflict error since it cannot be resolved by error fallback.
@@ -211,11 +215,8 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 		errs = append(errs, fmt.Errorf("failed to update work status with err %w", err))
 	}
 
-	if !updated && needRequeue {
-		controllerContext.Queue().AddAfter(manifestWorkName, m.rateLimiter.When(manifestWorkName))
-	}
-	if !needRequeue {
-		m.rateLimiter.Forget(manifestWorkName)
+	if !updated && requeueTime < MaxRequeueDuration {
+		controllerContext.Queue().AddAfter(manifestWorkName, requeueTime)
 	}
 
 	if len(errs) > 0 {

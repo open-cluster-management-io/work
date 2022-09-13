@@ -70,7 +70,7 @@ func TestValidate(t *testing.T) {
 			namespace: "test-deny",
 			name:      "test",
 			action:    auth.ApplyAction,
-			expect:    fmt.Errorf("secrets \"test\" is forbidden: not allowed to apply the resource"),
+			expect:    fmt.Errorf("not allowed to apply the resource  secrets, name: test, will try again in 1m0s"),
 		},
 		"allow": {
 			executor: &workapiv1.ManifestWorkExecutor{
