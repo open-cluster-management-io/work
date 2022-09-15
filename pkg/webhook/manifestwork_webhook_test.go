@@ -2,17 +2,18 @@ package webhook
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 	"testing"
 
+	ocmfeature "open-cluster-management.io/api/feature"
 	workv1 "open-cluster-management.io/api/work/v1"
-	"open-cluster-management.io/work/pkg/features"
+	_ "open-cluster-management.io/work/pkg/features"
 	"open-cluster-management.io/work/pkg/spoke/spoketesting"
 
 	admissionv1beta1 "k8s.io/api/admission/v1beta1"
 	authenticationv1 "k8s.io/api/authentication/v1"
-	authorizationv1 "k8s.io/api/authorization/v1"
 	v1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -195,6 +196,7 @@ func TestManifestWorkExecutorValidate(t *testing.T) {
 		name             string
 		request          *admissionv1beta1.AdmissionRequest
 		manifests        []*unstructured.Unstructured
+		oldExecutor      *workv1.ManifestWorkExecutor
 		executor         *workv1.ManifestWorkExecutor
 		expectedResponse *admissionv1beta1.AdmissionResponse
 	}{
@@ -316,24 +318,105 @@ func TestManifestWorkExecutorValidate(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "validate executor not changed success",
+			request: &admissionv1beta1.AdmissionRequest{
+				Resource:  manifestWorkSchema,
+				Operation: admissionv1beta1.Update,
+				UserInfo:  authenticationv1.UserInfo{Username: "test1"},
+			},
+			manifests: []*unstructured.Unstructured{
+				{
+					Object: map[string]interface{}{
+						"apiVersion": "v1",
+						"kind":       "kind",
+						"metadata": map[string]interface{}{
+							"namespace": "ns1",
+							"name":      "test",
+						},
+					},
+				},
+			},
+			oldExecutor: &workv1.ManifestWorkExecutor{
+				Subject: workv1.ManifestWorkExecutorSubject{
+					Type: workv1.ExecutorSubjectTypeServiceAccount,
+					ServiceAccount: &workv1.ManifestWorkSubjectServiceAccount{
+						Namespace: "ns1",
+						Name:      "executor2",
+					},
+				},
+			},
+			executor: &workv1.ManifestWorkExecutor{
+				Subject: workv1.ManifestWorkExecutorSubject{
+					Type: workv1.ExecutorSubjectTypeServiceAccount,
+					ServiceAccount: &workv1.ManifestWorkSubjectServiceAccount{
+						Namespace: "ns1",
+						Name:      "executor2",
+					},
+				},
+			},
+			expectedResponse: &admissionv1beta1.AdmissionResponse{
+				Allowed: true,
+			},
+		},
+		{
+			name: "validate executor changed fail",
+			request: &admissionv1beta1.AdmissionRequest{
+				Resource:  manifestWorkSchema,
+				Operation: admissionv1beta1.Update,
+				UserInfo:  authenticationv1.UserInfo{Username: "test1"},
+			},
+			manifests: []*unstructured.Unstructured{
+				{
+					Object: map[string]interface{}{
+						"apiVersion": "v1",
+						"kind":       "kind",
+						"metadata": map[string]interface{}{
+							"namespace": "ns1",
+							"name":      "test",
+						},
+					},
+				},
+			},
+			oldExecutor: &workv1.ManifestWorkExecutor{
+				Subject: workv1.ManifestWorkExecutorSubject{
+					Type: workv1.ExecutorSubjectTypeServiceAccount,
+					ServiceAccount: &workv1.ManifestWorkSubjectServiceAccount{
+						Namespace: "ns1",
+						Name:      "executor1",
+					},
+				},
+			},
+			executor: &workv1.ManifestWorkExecutor{
+				Subject: workv1.ManifestWorkExecutorSubject{
+					Type: workv1.ExecutorSubjectTypeServiceAccount,
+					ServiceAccount: &workv1.ManifestWorkSubjectServiceAccount{
+						Namespace: "ns1",
+						Name:      "executor2",
+					},
+				},
+			},
+			expectedResponse: &admissionv1beta1.AdmissionResponse{
+				Allowed: false,
+				Result: &metav1.Status{
+					Status: metav1.StatusFailure, Code: http.StatusBadRequest, Reason: metav1.StatusReasonBadRequest,
+					Message: "user test1 cannot manipulate the Manifestwork with executor ns1/executor2 in namespace cluster1",
+				},
+			},
+		},
 	}
 
-	// TODO: move the feature gate description to api repo
-	// utilruntime.Must(utilfeature.DefaultMutableFeatureGate.Add(
-	// 	map[featuregate.Feature]featuregate.FeatureSpec{
-	// 		features.NilExecutorValidating: {Default: true, PreRelease: featuregate.Alpha},
-	// 	}))
-	utilruntime.Must(utilfeature.DefaultMutableFeatureGate.SetFromMap(
-		map[string]bool{
-			string(features.NilExecutorValidating): true,
-		}))
+	utilruntime.Must(utilfeature.DefaultMutableFeatureGate.Set(
+		fmt.Sprintf("%s=true", ocmfeature.NilExecutorValidating),
+	))
+
 	kubeClient := fakekube.NewSimpleClientset()
 	kubeClient.PrependReactor("create", "subjectaccessreviews",
 		func(action clienttesting.Action) (handled bool, ret runtime.Object, err error) {
 			obj := action.(clienttesting.CreateActionImpl).Object.(*v1.SubjectAccessReview)
 
 			if obj.Spec.User == "test1" &&
-				reflect.DeepEqual(obj.Spec.ResourceAttributes, &authorizationv1.ResourceAttributes{
+				reflect.DeepEqual(obj.Spec.ResourceAttributes, &v1.ResourceAttributes{
 					Group:     "work.open-cluster-management.io",
 					Resource:  "manifestworks",
 					Verb:      "execute-as",
@@ -348,7 +431,7 @@ func TestManifestWorkExecutorValidate(t *testing.T) {
 			}
 
 			if obj.Spec.User == "test1" &&
-				reflect.DeepEqual(obj.Spec.ResourceAttributes, &authorizationv1.ResourceAttributes{
+				reflect.DeepEqual(obj.Spec.ResourceAttributes, &v1.ResourceAttributes{
 					Group:     "work.open-cluster-management.io",
 					Resource:  "manifestworks",
 					Verb:      "execute-as",
@@ -379,6 +462,11 @@ func TestManifestWorkExecutorValidate(t *testing.T) {
 			work, _ := spoketesting.NewManifestWork(0, c.manifests...)
 			work.Spec.Executor = c.executor
 			c.request.Object.Raw, _ = json.Marshal(work)
+			if c.request.Operation == admissionv1beta1.Update {
+				oldWork := work.DeepCopy()
+				oldWork.Spec.Executor = c.oldExecutor
+				c.request.OldObject.Raw, _ = json.Marshal(oldWork)
+			}
 
 			actualResponse := admissionHook.Validate(c.request)
 			if !reflect.DeepEqual(actualResponse, c.expectedResponse) {

@@ -5,16 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 
+	ocmfeature "open-cluster-management.io/api/feature"
 	workv1 "open-cluster-management.io/api/work/v1"
-	"open-cluster-management.io/work/pkg/features"
 
 	admissionv1beta1 "k8s.io/api/admission/v1beta1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
@@ -77,7 +77,7 @@ func (a *ManifestWorkAdmissionHook) Initialize(kubeClientConfig *rest.Config, st
 func (a *ManifestWorkAdmissionHook) validateRequest(request *admissionv1beta1.AdmissionRequest) *admissionv1beta1.AdmissionResponse {
 	status := &admissionv1beta1.AdmissionResponse{}
 
-	err := a.validateManifestWorkObj(request.Object, request.UserInfo)
+	err := a.validateManifestWorkObj(request)
 	if err != nil {
 		status.Allowed = false
 		status.Result = &metav1.Status{
@@ -92,9 +92,9 @@ func (a *ManifestWorkAdmissionHook) validateRequest(request *admissionv1beta1.Ad
 }
 
 // validateManifestWorkObj validates the fileds of manifestwork object
-func (a *ManifestWorkAdmissionHook) validateManifestWorkObj(requestObj runtime.RawExtension, userInfo authenticationv1.UserInfo) error {
+func (a *ManifestWorkAdmissionHook) validateManifestWorkObj(request *admissionv1beta1.AdmissionRequest) error {
 	work := &workv1.ManifestWork{}
-	if err := json.Unmarshal(requestObj.Raw, work); err != nil {
+	if err := json.Unmarshal(request.Object.Raw, work); err != nil {
 		return err
 	}
 
@@ -106,11 +106,23 @@ func (a *ManifestWorkAdmissionHook) validateManifestWorkObj(requestObj runtime.R
 		return err
 	}
 
-	if err := a.validateExecutor(work, userInfo); err != nil {
-		return err
+	checkExecutor := true
+	if request.Operation == admissionv1beta1.Update {
+		oldWork := &workv1.ManifestWork{}
+		if err := json.Unmarshal(request.OldObject.Raw, oldWork); err != nil {
+			return err
+		}
+
+		// do not need to check the executor when it is not changed
+		if reflect.DeepEqual(oldWork.Spec.Executor, work.Spec.Executor) {
+			checkExecutor = false
+		}
+	}
+	if !checkExecutor {
+		return nil
 	}
 
-	return nil
+	return a.validateExecutor(work, request.UserInfo)
 }
 
 func (a *ManifestWorkAdmissionHook) validateManifests(work *workv1.ManifestWork) error {
@@ -156,7 +168,7 @@ func (a *ManifestWorkAdmissionHook) validateManifest(manifest []byte) error {
 func (a *ManifestWorkAdmissionHook) validateExecutor(work *workv1.ManifestWork, userInfo authenticationv1.UserInfo) error {
 	executor := work.Spec.Executor
 
-	if !utilfeature.DefaultMutableFeatureGate.Enabled(features.NilExecutorValidating) {
+	if !utilfeature.DefaultMutableFeatureGate.Enabled(ocmfeature.NilExecutorValidating) {
 		if executor == nil {
 			return nil
 		}
