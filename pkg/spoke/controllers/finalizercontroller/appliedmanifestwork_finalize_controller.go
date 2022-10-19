@@ -24,6 +24,7 @@ import (
 )
 
 // AppliedManifestWorkFinalizeController handles cleanup of appliedmanifestwork resources before deletion is allowed.
+// It should handle all appliedmanifestworks belonging to this agent identified by the agentID.
 type AppliedManifestWorkFinalizeController struct {
 	appliedManifestWorkClient workv1client.AppliedManifestWorkInterface
 	appliedManifestWorkLister worklister.AppliedManifestWorkLister
@@ -36,7 +37,7 @@ func NewAppliedManifestWorkFinalizeController(
 	spokeDynamicClient dynamic.Interface,
 	appliedManifestWorkClient workv1client.AppliedManifestWorkInterface,
 	appliedManifestWorkInformer workinformer.AppliedManifestWorkInformer,
-	hubHash string,
+	agentID string,
 ) factory.Controller {
 
 	controller := &AppliedManifestWorkFinalizeController{
@@ -50,7 +51,7 @@ func NewAppliedManifestWorkFinalizeController(
 		WithFilteredEventsInformersQueueKeyFunc(func(obj runtime.Object) string {
 			accessor, _ := meta.Accessor(obj)
 			return accessor.GetName()
-		}, helper.AppliedManifestworkHubHashFilter(hubHash), appliedManifestWorkInformer.Informer()).
+		}, helper.AppliedManifestworkAgentIDFilter(agentID), appliedManifestWorkInformer.Informer()).
 		WithSync(controller.sync).ToController("AppliedManifestWorkFinalizer", recorder)
 }
 
