@@ -138,7 +138,7 @@ func (o *WorkloadAgentOptions) RunWorkloadAgent(ctx context.Context, controllerC
 		spokeDynamicClient,
 		spokeWorkClient.WorkV1().AppliedManifestWorks(),
 		spokeWorkInformerFactory.Work().V1().AppliedManifestWorks(),
-		hubhash,
+		agentID,
 	)
 	manifestWorkFinalizeController := finalizercontroller.NewManifestWorkFinalizeController(
 		controllerContext.EventRecorder,

@@ -57,7 +57,7 @@ func NewAppliedManifestWorkFinalizeController(
 
 func (m *AppliedManifestWorkFinalizeController) sync(ctx context.Context, controllerContext factory.SyncContext) error {
 	appliedManifestWorkName := controllerContext.QueueKey()
-	klog.V(4).Infof("Reconciling ManifestWork %q", appliedManifestWorkName)
+	klog.V(4).Infof("Reconciling AppliedManifestWork %q", appliedManifestWorkName)
 
 	appliedManifestWork, err := m.appliedManifestWorkLister.Get(appliedManifestWorkName)
 	if errors.IsNotFound(err) {
@@ -122,6 +122,7 @@ func (m *AppliedManifestWorkFinalizeController) syncAppliedManifestWork(ctx cont
 
 	// requeue the work until all applied resources are deleted and finalized if the appliedmanifestwork itself is not updated
 	if len(resourcesPendingFinalization) != 0 {
+		klog.V(4).Infof("%d resources pending deletions %v", len(resourcesPendingFinalization))
 		if !updatedAppliedManifestWork {
 			controllerContext.Queue().AddAfter(appliedManifestWork.Name, m.rateLimiter.When(appliedManifestWork.Name))
 		}

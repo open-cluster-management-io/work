@@ -3,7 +3,6 @@ package finalizercontroller
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/openshift/library-go/pkg/controller/factory"
 	"github.com/openshift/library-go/pkg/operator/events"
@@ -14,7 +13,6 @@ import (
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	workv1client "open-cluster-management.io/api/client/work/clientset/versioned/typed/work/v1"
 	workinformer "open-cluster-management.io/api/client/work/informers/externalversions/work/v1"
@@ -32,7 +30,6 @@ type UnManagedAppliedWorkController struct {
 	appliedManifestWorkIndexer cache.Indexer
 	hubHash                    string
 	agentID                    string
-	rateLimiter                workqueue.RateLimiter
 }
 
 func NewUnManagedAppliedWorkController(
@@ -48,7 +45,6 @@ func NewUnManagedAppliedWorkController(
 		appliedManifestWorkIndexer: appliedManifestWorkInformer.Informer().GetIndexer(),
 		hubHash:                    hubHash,
 		agentID:                    agentID,
-		rateLimiter:                workqueue.NewItemExponentialFailureRateLimiter(5*time.Millisecond, 1000*time.Second),
 	}
 
 	err := appliedManifestWorkInformer.Informer().AddIndexers(cache.Indexers{
@@ -83,7 +79,7 @@ func (m *UnManagedAppliedWorkController) sync(ctx context.Context, controllerCon
 
 	var errs []error
 	for _, appliedWork := range unManagedAppliedWorks {
-		klog.V(2).Infof("Delete appliedWork %s since it is not managed by agent anymore", appliedWork.Name)
+		klog.V(2).Infof("Delete appliedWork %s since it is not managed by agent %s anymore", appliedWork.Name, m.agentID)
 		err := m.appliedManifestWorkClient.Delete(ctx, appliedWork.Name, metav1.DeleteOptions{})
 		if err != nil {
 			errs = append(errs, err)
