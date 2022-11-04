@@ -5,24 +5,26 @@ import (
 	"fmt"
 	"time"
 
+	workclientset "open-cluster-management.io/api/client/work/clientset/versioned"
+	workinformers "open-cluster-management.io/api/client/work/informers/externalversions"
 	"open-cluster-management.io/work/pkg/helper"
 	"open-cluster-management.io/work/pkg/spoke/auth"
 	"open-cluster-management.io/work/pkg/spoke/controllers/appliedmanifestcontroller"
+	"open-cluster-management.io/work/pkg/spoke/controllers/cachecontroller"
 	"open-cluster-management.io/work/pkg/spoke/controllers/finalizercontroller"
 	"open-cluster-management.io/work/pkg/spoke/controllers/manifestcontroller"
 	"open-cluster-management.io/work/pkg/spoke/controllers/statuscontroller"
-	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
 	"github.com/openshift/library-go/pkg/controller/controllercmd"
 	"github.com/spf13/cobra"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-
-	workclientset "open-cluster-management.io/api/client/work/clientset/versioned"
-	workinformers "open-cluster-management.io/api/client/work/informers/externalversions"
+	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 )
 
 // WorkloadAgentOptions defines the flags for workload agent
@@ -111,7 +113,36 @@ func (o *WorkloadAgentOptions) RunWorkloadAgent(ctx context.Context, controllerC
 		return err
 	}
 
-	validator := auth.NewExecutorValidator(spokeRestConfig, spokeKubeClient)
+	var validator auth.ExecutorValidator
+	sarValidator := auth.NewSARValidator(spokeRestConfig, spokeKubeClient)
+	validator = sarValidator
+
+	// TODO: read this from flag
+	enableExecutorCache := true
+	if enableExecutorCache {
+		klog.V(4).Infof("enableExecutorCache %v", enableExecutorCache)
+		executorCaches := auth.NewExecutorCache()
+		cacheValidator := auth.NewExecutorCacheValidator(sarValidator, executorCaches)
+		validator = cacheValidator
+
+		// the spokeKubeInformerFactory will only be used for the executor cache controller, and we do not want to
+		// update the cache very frequently, set resync period to every week
+		spokeKubeInformerFactory := informers.NewSharedInformerFactoryWithOptions(spokeKubeClient, 24*7*time.Hour)
+
+		cacheController := cachecontroller.NewExecutorCacheController(ctx, controllerContext.EventRecorder,
+			workInformerFactory.Work().V1().ManifestWorks().Lister().ManifestWorks(o.SpokeClusterName),
+			spokeKubeInformerFactory.Rbac().V1().ClusterRoleBindings(),
+			spokeKubeInformerFactory.Rbac().V1().RoleBindings(),
+			spokeKubeInformerFactory.Rbac().V1().ClusterRoles(),
+			spokeKubeInformerFactory.Rbac().V1().Roles(),
+			restMapper,
+			executorCaches,
+			cacheValidator.GetSARCheckerFn(),
+		)
+		go spokeKubeInformerFactory.Start(ctx.Done())
+		go cacheController.Run(ctx, 1)
+	}
+
 	manifestWorkController := manifestcontroller.NewManifestWorkController(
 		ctx,
 		controllerContext.EventRecorder,

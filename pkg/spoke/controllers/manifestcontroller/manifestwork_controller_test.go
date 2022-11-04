@@ -45,7 +45,7 @@ func newController(t *testing.T, work *workapiv1.ManifestWork, appliedWork *work
 		appliedManifestWorkClient: fakeWorkClient.WorkV1().AppliedManifestWorks(),
 		appliedManifestWorkLister: workInformerFactory.Work().V1().AppliedManifestWorks().Lister(),
 		restMapper:                mapper,
-		validator:                 auth.NewExecutorValidator(nil, spokeKubeClient),
+		validator:                 auth.NewSARValidator(nil, spokeKubeClient),
 	}
 
 	if err := workInformerFactory.Work().V1().ManifestWorks().Informer().GetStore().Add(work); err != nil {

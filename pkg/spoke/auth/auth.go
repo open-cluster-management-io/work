@@ -40,7 +40,7 @@ func (e *NotAllowedError) Error() string {
 	return err
 }
 
-func NewExecutorValidator(config *rest.Config, kubeClient kubernetes.Interface) ExecutorValidator {
+func NewSARValidator(config *rest.Config, kubeClient kubernetes.Interface) *sarValidator {
 	return &sarValidator{
 		kubeClient:               kubeClient,
 		config:                   config,
@@ -72,6 +72,20 @@ func (v *sarValidator) Validate(ctx context.Context, executor *workapiv1.Manifes
 		return nil
 	}
 
+	if err := v.executorBasicCheck(executor); err != nil {
+		return err
+	}
+
+	if err := v.checkSubjectAccessReviews(ctx, executor.Subject.ServiceAccount,
+		gvr, namespace, name, ownedByTheWork); err != nil {
+		return err
+	}
+
+	// subjectaccessreview can not check permission escalation, use an impersonation request to check again
+	return v.checkEscalation(ctx, executor.Subject.ServiceAccount, gvr, namespace, name, obj)
+}
+
+func (v *sarValidator) executorBasicCheck(executor *workapiv1.ManifestWorkExecutor) error {
 	if executor.Subject.Type != workapiv1.ExecutorSubjectTypeServiceAccount {
 		return fmt.Errorf("only support %s type for the executor", workapiv1.ExecutorSubjectTypeServiceAccount)
 	}
@@ -80,6 +94,12 @@ func (v *sarValidator) Validate(ctx context.Context, executor *workapiv1.Manifes
 	if sa == nil {
 		return fmt.Errorf("the executor service account is nil")
 	}
+
+	return nil
+}
+
+func (v *sarValidator) checkSubjectAccessReviews(ctx context.Context, sa *workapiv1.ManifestWorkSubjectServiceAccount,
+	gvr schema.GroupVersionResource, namespace, name string, ownedByTheWork bool) error {
 
 	verbs := []string{"create", "update", "patch", "get"}
 	if ownedByTheWork {
@@ -112,20 +132,19 @@ func (v *sarValidator) Validate(ctx context.Context, executor *workapiv1.Manifes
 		}
 	}
 
-	if gvr.Group != "rbac.authorization.k8s.io" {
-		return nil
-	}
-	if gvr.Resource == "roles" || gvr.Resource == "rolebindings" ||
-		gvr.Resource == "clusterroles" || gvr.Resource == "clusterrolebindings" {
-		// subjectaccessreview can not check permission escalation, use an impersonation request to check again
-		return v.checkEscalation(ctx, sa, gvr, namespace, name, obj)
-	}
-
 	return nil
 }
 
 func (v *sarValidator) checkEscalation(ctx context.Context, sa *workapiv1.ManifestWorkSubjectServiceAccount,
 	gvr schema.GroupVersionResource, namespace, name string, obj *unstructured.Unstructured) error {
+
+	if gvr.Group != "rbac.authorization.k8s.io" {
+		return nil
+	}
+	if gvr.Resource != "roles" && gvr.Resource != "rolebindings" &&
+		gvr.Resource != "clusterroles" && gvr.Resource != "clusterrolebindings" {
+		return nil
+	}
 
 	dynamicClient, err := v.newImpersonateClientFunc(v.config, username(sa.Namespace, sa.Name))
 	if err != nil {

@@ -102,7 +102,7 @@ func TestValidate(t *testing.T) {
 			return false, nil, nil
 		},
 	)
-	validator := NewExecutorValidator(nil, kubeClient)
+	validator := NewSARValidator(nil, kubeClient)
 	for testName, test := range tests {
 		t.Run(testName, func(t *testing.T) {
 			err := validator.Validate(context.TODO(), test.executor, gvr, test.namespace, test.name, true, nil)
