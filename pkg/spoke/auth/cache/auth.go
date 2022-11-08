@@ -63,6 +63,9 @@ func NewExecutorCacheValidator(
 	return v
 }
 
+// Start starts the informer and the controller
+// It's an error to call Start more than once.
+// Start blocks; call via go.
 func (v *sarCacheValidator) Start(ctx context.Context) {
 	v.spokeInformer.Start(ctx.Done())
 	v.cacheController.Run(ctx, 1)

@@ -34,6 +34,9 @@ type CacheController struct {
 	executorCaches     *store.ExecutorCaches
 	sarCheckerFn       SubjectAccessReviewCheckFn
 	restMapper         meta.RESTMapper
+
+	roleBindingExecutorsMapper        map[string][]string
+	clusterRoleBindingExecutorsMapper map[string][]string
 }
 
 // NewExecutorCacheController returns an ExecutorCacheController
@@ -49,6 +52,15 @@ func NewExecutorCacheController(
 	executorCaches *store.ExecutorCaches,
 	sarCheckerFn SubjectAccessReviewCheckFn,
 ) factory.Controller {
+
+	controller := &CacheController{
+		manifestWorkLister:                manifestWorkLister,
+		restMapper:                        restMapper,
+		executorCaches:                    executorCaches,
+		sarCheckerFn:                      sarCheckerFn,
+		roleBindingExecutorsMapper:        make(map[string][]string),
+		clusterRoleBindingExecutorsMapper: make(map[string][]string),
+	}
 
 	err := crbInformer.Informer().AddIndexers(
 		cache.Indexers{
@@ -69,29 +81,33 @@ func NewExecutorCacheController(
 		utilruntime.HandleError(err)
 	}
 
-	controller := &CacheController{
-		manifestWorkLister: manifestWorkLister,
-		restMapper:         restMapper,
-		executorCaches:     executorCaches,
-		sarCheckerFn:       sarCheckerFn,
-	}
+	cacheControllerName := "ManifestWorkExecutorCache"
+	syncCtx := factory.NewSyncContext(cacheControllerName, recorder)
+
+	rbInformer.Informer().AddEventHandler(&roleBindingEventHandler{
+		enqueueUpsertFunc: controller.bindingResourceUpsertEnqueueFn(syncCtx, controller.roleBindingExecutorsMapper),
+		enqueueDeleteFunc: controller.bindingResourceDeleteEnqueueFn(syncCtx, controller.roleBindingExecutorsMapper),
+	})
+
+	crbInformer.Informer().AddEventHandler(&clusterRoleBindingEventHandler{
+		enqueueUpsertFunc: controller.bindingResourceUpsertEnqueueFn(
+			syncCtx, controller.clusterRoleBindingExecutorsMapper),
+		enqueueDeleteFunc: controller.bindingResourceDeleteEnqueueFn(
+			syncCtx, controller.clusterRoleBindingExecutorsMapper),
+	})
 
 	return factory.New().
+		WithSyncContext(syncCtx).
 		WithInformersQueueKeysFunc(
 			roleEnqueueFu(rbInformer.Informer().GetIndexer(), executorCaches),
 			rInformer.Informer()).
 		WithInformersQueueKeysFunc(
 			clusterRoleEnqueueFu(rbInformer.Informer().GetIndexer(), crbInformer.Informer().GetIndexer(), executorCaches),
 			crInformer.Informer()).
-		WithInformersQueueKeysFunc(
-			roleBindingEnqueueFu(executorCaches),
-			rbInformer.Informer()).
-		WithInformersQueueKeysFunc(
-			clusterRoleBindingEnqueueFu(executorCaches),
-			crbInformer.Informer()).
+		WithBareInformers(rbInformer.Informer(), crbInformer.Informer()).
 		WithSync(controller.sync).
 		ResyncEvery(ResyncInterval). // cleanup unnecessary cache every ResyncInterval
-		ToController("ManifestWorkExecutorCache", recorder)
+		ToController(cacheControllerName, recorder)
 }
 
 func roleEnqueueFu(rbIndexer cache.Indexer, executorCaches *store.ExecutorCaches) func(runtime.Object) []string {
@@ -153,29 +169,47 @@ func clusterRoleEnqueueFu(rbIndexer cache.Indexer, crbIndexer cache.Indexer,
 	}
 }
 
-func roleBindingEnqueueFu(executorCaches *store.ExecutorCaches) func(runtime.Object) []string {
-	return func(obj runtime.Object) []string {
-		ret := make([]string, 0)
+func (c *CacheController) bindingResourceUpsertEnqueueFn(
+	syncCtx factory.SyncContext,
+	bindingExecutorsMapper map[string][]string,
+) func(key string, subjects []rbacapiv1.Subject) {
 
-		if rb, ok := obj.(*rbacapiv1.RoleBinding); ok {
-			executors := getInterestedExecutors(rb.Subjects, executorCaches)
-			ret = append(ret, executors...)
+	return func(key string, subjects []rbacapiv1.Subject) {
+		executors := getInterestedExecutors(subjects, c.executorCaches)
+		for _, executor := range executors {
+			syncCtx.Queue().Add(executor)
 		}
-
-		return ret
+		if len(executors) > 0 {
+			bindingExecutorsMapper[key] = executors
+			klog.V(4).Infof("binding executor mapper upsert key %s executors %s", key, executors)
+		}
 	}
 }
 
-func clusterRoleBindingEnqueueFu(executorCaches *store.ExecutorCaches) func(runtime.Object) []string {
-	return func(obj runtime.Object) []string {
-		ret := make([]string, 0)
+func (c *CacheController) bindingResourceDeleteEnqueueFn(
+	syncCtx factory.SyncContext,
+	bindingExecutorsMapper map[string][]string,
+) func(key string, subjects []rbacapiv1.Subject) {
 
-		if crb, ok := obj.(*rbacapiv1.ClusterRoleBinding); ok {
-			executors := getInterestedExecutors(crb.Subjects, executorCaches)
-			ret = append(ret, executors...)
+	return func(key string, subjects []rbacapiv1.Subject) {
+		enqueued := false
+		if subjects != nil {
+			for _, executor := range getInterestedExecutors(subjects, c.executorCaches) {
+				syncCtx.Queue().Add(executor)
+				enqueued = true
+			}
+		} else {
+			for _, executor := range bindingExecutorsMapper[key] {
+				syncCtx.Queue().Add(executor)
+				enqueued = true
+				klog.V(4).Infof("deletion event, enqueue executor %s from binding executor mapper key %s", executor, key)
+			}
 		}
 
-		return ret
+		if enqueued {
+			delete(bindingExecutorsMapper, key)
+			klog.V(4).Infof("binding executor mapper delete key %s", key)
+		}
 	}
 }
 
