@@ -1,4 +1,4 @@
-package cachecontroller
+package cache
 
 import (
 	"context"
@@ -20,7 +20,7 @@ import (
 	worklister "open-cluster-management.io/api/client/work/listers/work/v1"
 	workapiv1 "open-cluster-management.io/api/work/v1"
 	"open-cluster-management.io/work/pkg/helper"
-	"open-cluster-management.io/work/pkg/spoke/auth"
+	"open-cluster-management.io/work/pkg/spoke/auth/store"
 )
 
 var (
@@ -31,8 +31,8 @@ var (
 // on spoke cluster.
 type CacheController struct {
 	manifestWorkLister worklister.ManifestWorkNamespaceLister
-	executorCaches     *auth.ExecutorCaches
-	sarCheckerFn       auth.SubjectAccessReviewCheckFn
+	executorCaches     *store.ExecutorCaches
+	sarCheckerFn       SubjectAccessReviewCheckFn
 	restMapper         meta.RESTMapper
 }
 
@@ -46,8 +46,8 @@ func NewExecutorCacheController(
 	crInformer rbacv1.ClusterRoleInformer,
 	rInformer rbacv1.RoleInformer,
 	restMapper meta.RESTMapper,
-	executorCaches *auth.ExecutorCaches,
-	sarCheckerFn auth.SubjectAccessReviewCheckFn,
+	executorCaches *store.ExecutorCaches,
+	sarCheckerFn SubjectAccessReviewCheckFn,
 ) factory.Controller {
 
 	err := crbInformer.Informer().AddIndexers(
@@ -88,13 +88,13 @@ func NewExecutorCacheController(
 			rbInformer.Informer()).
 		WithInformersQueueKeysFunc(
 			clusterRoleBindingEnqueueFu(executorCaches),
-			rbInformer.Informer()).
+			crbInformer.Informer()).
 		WithSync(controller.sync).
 		ResyncEvery(ResyncInterval). // cleanup unnecessary cache every ResyncInterval
 		ToController("ManifestWorkExecutorCache", recorder)
 }
 
-func roleEnqueueFu(rbIndexer cache.Indexer, executorCaches *auth.ExecutorCaches) func(runtime.Object) []string {
+func roleEnqueueFu(rbIndexer cache.Indexer, executorCaches *store.ExecutorCaches) func(runtime.Object) []string {
 	return func(obj runtime.Object) []string {
 		accessor, _ := meta.Accessor(obj)
 		ret := make([]string, 0)
@@ -117,7 +117,7 @@ func roleEnqueueFu(rbIndexer cache.Indexer, executorCaches *auth.ExecutorCaches)
 }
 
 func clusterRoleEnqueueFu(rbIndexer cache.Indexer, crbIndexer cache.Indexer,
-	executorCaches *auth.ExecutorCaches) func(runtime.Object) []string {
+	executorCaches *store.ExecutorCaches) func(runtime.Object) []string {
 	return func(obj runtime.Object) []string {
 		accessor, _ := meta.Accessor(obj)
 		ret := make([]string, 0)
@@ -153,7 +153,7 @@ func clusterRoleEnqueueFu(rbIndexer cache.Indexer, crbIndexer cache.Indexer,
 	}
 }
 
-func roleBindingEnqueueFu(executorCaches *auth.ExecutorCaches) func(runtime.Object) []string {
+func roleBindingEnqueueFu(executorCaches *store.ExecutorCaches) func(runtime.Object) []string {
 	return func(obj runtime.Object) []string {
 		ret := make([]string, 0)
 
@@ -166,7 +166,7 @@ func roleBindingEnqueueFu(executorCaches *auth.ExecutorCaches) func(runtime.Obje
 	}
 }
 
-func clusterRoleBindingEnqueueFu(executorCaches *auth.ExecutorCaches) func(runtime.Object) []string {
+func clusterRoleBindingEnqueueFu(executorCaches *store.ExecutorCaches) func(runtime.Object) []string {
 	return func(obj runtime.Object) []string {
 		ret := make([]string, 0)
 
@@ -179,12 +179,12 @@ func clusterRoleBindingEnqueueFu(executorCaches *auth.ExecutorCaches) func(runti
 	}
 }
 
-func getInterestedExecutors(subjects []rbacapiv1.Subject, executorCaches *auth.ExecutorCaches) []string {
+func getInterestedExecutors(subjects []rbacapiv1.Subject, executorCaches *store.ExecutorCaches) []string {
 	executors := make([]string, 0)
 	for _, subject := range subjects {
 		if subject.Kind == "ServiceAccount" {
-			executor := auth.ExecutorKey(subject.Namespace, subject.Name)
-			if _, ok := executorCaches.GetDimensionCaches(executor); ok {
+			executor := store.ExecutorKey(subject.Namespace, subject.Name)
+			if ok := executorCaches.DimensionCachesExists(executor); ok {
 				executors = append(executors, executor)
 			}
 		}
@@ -194,14 +194,14 @@ func getInterestedExecutors(subjects []rbacapiv1.Subject, executorCaches *auth.E
 
 // sync is the main reconcile loop for executors. It is triggered when RBAC resources(
 // role, rolebinding, clusterrole, clusterrolebinding) for the executor changed
-func (m *CacheController) sync(ctx context.Context, controllerContext factory.SyncContext) error {
+func (c *CacheController) sync(ctx context.Context, controllerContext factory.SyncContext) error {
 	executorKey := controllerContext.QueueKey()
 	klog.V(4).Infof("Executor cache sync, executorKey: %v", executorKey)
 	if executorKey == "key" {
 		// cleanup unnecessary cache
-		klog.V(4).Infof("There are %v cache items before cleanup", m.countCache())
-		m.cleanupUnnecessaryCache()
-		klog.V(4).Infof("There are %v cache items after cleanup", m.countCache())
+		klog.V(4).Infof("There are %v cache items before cleanup", c.executorCaches.Count())
+		c.cleanupUnnecessaryCache()
+		klog.V(4).Infof("There are %v cache items after cleanup", c.executorCaches.Count())
 		return nil
 	}
 
@@ -211,59 +211,45 @@ func (m *CacheController) sync(ctx context.Context, controllerContext factory.Sy
 		return nil
 	}
 
-	caches, ok := m.executorCaches.GetDimensionCaches(executorKey)
-	if !ok {
-		klog.V(4).Infof("The cache of executor %s has not been initialized", executorKey)
-		return nil
-	}
-
-	for _, item := range caches.GetCacheItems() {
-		err = m.sarCheckerFn(ctx, &workapiv1.ManifestWorkSubjectServiceAccount{
-			Namespace: saNamespace,
-			Name:      saName,
-		}, schema.GroupVersionResource{
-			Group:    item.Dimension.Group,
-			Version:  item.Dimension.Version,
-			Resource: item.Dimension.Resource,
-		},
-			item.Dimension.Namespace, item.Dimension.Name, auth.OwnedByWork(item.Dimension.ExecuteAction))
-
-		klog.V(4).Infof("Update executor cache for executorKey: %s, dimension: %+v result: %v",
-			executorKey, item.Dimension, err)
-		auth.UpdateSARCheckResultToCache(m.executorCaches, executorKey, item.Dimension, err)
-	}
+	c.executorCaches.IterateCacheItems(executorKey, c.iterateCacheItemsFn(ctx, executorKey, saNamespace, saName))
 	return nil
 }
 
-func (m *CacheController) cleanupUnnecessaryCache() {
-	retainableCache := m.getAllValuableCache()
-	for key, caches := range m.executorCaches.GetCacheItems() {
-		if _, ok := retainableCache.GetDimensionCaches(key); !ok {
-			m.executorCaches.RemoveDimensionCaches(key)
-			klog.V(4).Infof("Remove dimension caches %s", key)
-			continue
-		}
+func (c *CacheController) iterateCacheItemsFn(ctx context.Context,
+	executorKey, saNamespace, saName string) func(v store.CacheValue) error {
+	return func(v store.CacheValue) error {
+		err := c.sarCheckerFn(ctx, &workapiv1.ManifestWorkSubjectServiceAccount{
+			Namespace: saNamespace,
+			Name:      saName,
+		}, schema.GroupVersionResource{
+			Group:    v.Dimension.Group,
+			Version:  v.Dimension.Version,
+			Resource: v.Dimension.Resource,
+		},
+			v.Dimension.Namespace, v.Dimension.Name, store.GetOwnedByWork(v.Dimension.ExecuteAction))
 
-		for hash := range caches.GetCacheItems() {
-			if _, ok := retainableCache.GetByHash(key, hash); !ok {
-				m.executorCaches.RemoveByHash(key, hash)
-				klog.V(4).Infof("Remove cache item executor %s dimension %s", key, hash)
-			}
-		}
+		klog.V(4).Infof("Update executor cache for executorKey: %s, dimension: %+v result: %v",
+			executorKey, v.Dimension, err)
+		updateSARCheckResultToCache(c.executorCaches, executorKey, v.Dimension, err)
+		return err
 	}
 }
 
-func (m *CacheController) getAllValuableCache() *auth.ExecutorCaches {
-	retainableCache := auth.NewExecutorCache()
+func (c *CacheController) cleanupUnnecessaryCache() {
+	c.executorCaches.CleanupUnnecessaryCaches(c.getAllValuableCache())
+}
 
-	mws, err := m.manifestWorkLister.List(labels.Everything())
+func (c *CacheController) getAllValuableCache() *store.ExecutorCaches {
+	retainableCache := store.NewExecutorCache()
+
+	mws, err := c.manifestWorkLister.List(labels.Everything())
 	if err != nil {
 		klog.Infof("cleanup cache, list manifestworks error: %v", err)
 		return retainableCache
 	}
 
 	for _, mw := range mws {
-		var executorKey string
+		var executor string
 		if mw.Spec.Executor == nil {
 			continue
 		}
@@ -274,12 +260,12 @@ func (m *CacheController) getAllValuableCache() *auth.ExecutorCaches {
 			continue
 		}
 
-		executorKey = auth.ExecutorKey(
+		executor = store.ExecutorKey(
 			mw.Spec.Executor.Subject.ServiceAccount.Namespace, mw.Spec.Executor.Subject.ServiceAccount.Name)
 
 		for _, manifest := range mw.Status.ResourceStatus.Manifests {
 
-			mapping, err := m.restMapper.RESTMapping(schema.GroupKind{
+			mapping, err := c.restMapper.RESTMapping(schema.GroupKind{
 				Group: manifest.ResourceMeta.Group,
 				Kind:  manifest.ResourceMeta.Kind,
 			}, manifest.ResourceMeta.Version)
@@ -293,26 +279,18 @@ func (m *CacheController) getAllValuableCache() *auth.ExecutorCaches {
 			ownedByTheWork := helper.OwnedByTheWork(gvr, manifest.ResourceMeta.Namespace, manifest.ResourceMeta.Name,
 				mw.Spec.DeleteOption)
 
-			retainableCache.AddWithEmptyValue(executorKey, auth.Dimension{
+			retainableCache.Add(executor, store.Dimension{
 				Group:         manifest.ResourceMeta.Group,
 				Version:       manifest.ResourceMeta.Version,
 				Resource:      gvr.Resource,
 				Namespace:     manifest.ResourceMeta.Namespace,
 				Name:          manifest.ResourceMeta.Name,
-				ExecuteAction: auth.GetExecuteAction(ownedByTheWork),
-			})
+				ExecuteAction: store.GetExecuteAction(ownedByTheWork),
+			},
+				false, // use false as a fake value
+			)
 		}
 	}
 
 	return retainableCache
-}
-
-func (m *CacheController) countCache() int {
-	count := 0
-	for _, caches := range m.executorCaches.GetCacheItems() {
-		for range caches.GetCacheItems() {
-			count++
-		}
-	}
-	return count
 }

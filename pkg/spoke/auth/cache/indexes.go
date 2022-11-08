@@ -1,4 +1,4 @@
-package cachecontroller
+package cache
 
 import (
 	"fmt"

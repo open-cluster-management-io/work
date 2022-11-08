@@ -10,7 +10,6 @@ import (
 	"open-cluster-management.io/work/pkg/helper"
 	"open-cluster-management.io/work/pkg/spoke/auth"
 	"open-cluster-management.io/work/pkg/spoke/controllers/appliedmanifestcontroller"
-	"open-cluster-management.io/work/pkg/spoke/controllers/cachecontroller"
 	"open-cluster-management.io/work/pkg/spoke/controllers/finalizercontroller"
 	"open-cluster-management.io/work/pkg/spoke/controllers/manifestcontroller"
 	"open-cluster-management.io/work/pkg/spoke/controllers/statuscontroller"
@@ -19,11 +18,9 @@ import (
 	"github.com/spf13/cobra"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 )
 
@@ -113,35 +110,15 @@ func (o *WorkloadAgentOptions) RunWorkloadAgent(ctx context.Context, controllerC
 		return err
 	}
 
-	var validator auth.ExecutorValidator
-	sarValidator := auth.NewSARValidator(spokeRestConfig, spokeKubeClient)
-	validator = sarValidator
-
 	// TODO: read this from flag
 	enableExecutorCache := true
-	if enableExecutorCache {
-		klog.V(4).Infof("enableExecutorCache %v", enableExecutorCache)
-		executorCaches := auth.NewExecutorCache()
-		cacheValidator := auth.NewExecutorCacheValidator(sarValidator, executorCaches)
-		validator = cacheValidator
-
-		// the spokeKubeInformerFactory will only be used for the executor cache controller, and we do not want to
-		// update the cache very frequently, set resync period to every week
-		spokeKubeInformerFactory := informers.NewSharedInformerFactoryWithOptions(spokeKubeClient, 24*7*time.Hour)
-
-		cacheController := cachecontroller.NewExecutorCacheController(ctx, controllerContext.EventRecorder,
-			workInformerFactory.Work().V1().ManifestWorks().Lister().ManifestWorks(o.SpokeClusterName),
-			spokeKubeInformerFactory.Rbac().V1().ClusterRoleBindings(),
-			spokeKubeInformerFactory.Rbac().V1().RoleBindings(),
-			spokeKubeInformerFactory.Rbac().V1().ClusterRoles(),
-			spokeKubeInformerFactory.Rbac().V1().Roles(),
-			restMapper,
-			executorCaches,
-			cacheValidator.GetSARCheckerFn(),
-		)
-		go spokeKubeInformerFactory.Start(ctx.Done())
-		go cacheController.Run(ctx, 1)
-	}
+	validator := auth.NewFactory(
+		spokeRestConfig,
+		spokeKubeClient,
+		workInformerFactory.Work().V1().ManifestWorks().Lister().ManifestWorks(o.SpokeClusterName),
+		controllerContext.EventRecorder,
+		restMapper,
+	).NewExecutorValidator(ctx, enableExecutorCache)
 
 	manifestWorkController := manifestcontroller.NewManifestWorkController(
 		ctx,

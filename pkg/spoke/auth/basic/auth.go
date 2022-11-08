@@ -1,4 +1,4 @@
-package auth
+package basic
 
 import (
 	"context"
@@ -18,15 +18,6 @@ import (
 	workapiv1 "open-cluster-management.io/api/work/v1"
 )
 
-// ExecutorValidator validates whether the executor has permission to perform the requests
-// to the local managed cluster
-type ExecutorValidator interface {
-	// Validate whether the work executor subject has permission to perform action on the specific manifest,
-	// if there is no permission will return a kubernetes forbidden error.
-	Validate(ctx context.Context, executor *workapiv1.ManifestWorkExecutor, gvr schema.GroupVersionResource,
-		namespace, name string, ownedByTheWork bool, obj *unstructured.Unstructured) error
-}
-
 type NotAllowedError struct {
 	Err         error
 	RequeueTime time.Duration
@@ -40,15 +31,15 @@ func (e *NotAllowedError) Error() string {
 	return err
 }
 
-func NewSARValidator(config *rest.Config, kubeClient kubernetes.Interface) *sarValidator {
-	return &sarValidator{
+func NewSARValidator(config *rest.Config, kubeClient kubernetes.Interface) *SarValidator {
+	return &SarValidator{
 		kubeClient:               kubeClient,
 		config:                   config,
 		newImpersonateClientFunc: defaultNewImpersonateClient,
 	}
 }
 
-type sarValidator struct {
+type SarValidator struct {
 	kubeClient               kubernetes.Interface
 	config                   *rest.Config
 	newImpersonateClientFunc newImpersonateClient
@@ -65,27 +56,27 @@ func defaultNewImpersonateClient(config *rest.Config, username string) (dynamic.
 	return dynamic.NewForConfig(&impersonatedConfig)
 }
 
-func (v *sarValidator) Validate(ctx context.Context, executor *workapiv1.ManifestWorkExecutor,
+func (v *SarValidator) Validate(ctx context.Context, executor *workapiv1.ManifestWorkExecutor,
 	gvr schema.GroupVersionResource, namespace, name string,
 	ownedByTheWork bool, obj *unstructured.Unstructured) error {
 	if executor == nil {
 		return nil
 	}
 
-	if err := v.executorBasicCheck(executor); err != nil {
+	if err := v.ExecutorBasicCheck(executor); err != nil {
 		return err
 	}
 
-	if err := v.checkSubjectAccessReviews(ctx, executor.Subject.ServiceAccount,
+	if err := v.CheckSubjectAccessReviews(ctx, executor.Subject.ServiceAccount,
 		gvr, namespace, name, ownedByTheWork); err != nil {
 		return err
 	}
 
 	// subjectaccessreview can not check permission escalation, use an impersonation request to check again
-	return v.checkEscalation(ctx, executor.Subject.ServiceAccount, gvr, namespace, name, obj)
+	return v.CheckEscalation(ctx, executor.Subject.ServiceAccount, gvr, namespace, name, obj)
 }
 
-func (v *sarValidator) executorBasicCheck(executor *workapiv1.ManifestWorkExecutor) error {
+func (v *SarValidator) ExecutorBasicCheck(executor *workapiv1.ManifestWorkExecutor) error {
 	if executor.Subject.Type != workapiv1.ExecutorSubjectTypeServiceAccount {
 		return fmt.Errorf("only support %s type for the executor", workapiv1.ExecutorSubjectTypeServiceAccount)
 	}
@@ -98,7 +89,7 @@ func (v *sarValidator) executorBasicCheck(executor *workapiv1.ManifestWorkExecut
 	return nil
 }
 
-func (v *sarValidator) checkSubjectAccessReviews(ctx context.Context, sa *workapiv1.ManifestWorkSubjectServiceAccount,
+func (v *SarValidator) CheckSubjectAccessReviews(ctx context.Context, sa *workapiv1.ManifestWorkSubjectServiceAccount,
 	gvr schema.GroupVersionResource, namespace, name string, ownedByTheWork bool) error {
 
 	verbs := []string{"create", "update", "patch", "get"}
@@ -135,7 +126,7 @@ func (v *sarValidator) checkSubjectAccessReviews(ctx context.Context, sa *workap
 	return nil
 }
 
-func (v *sarValidator) checkEscalation(ctx context.Context, sa *workapiv1.ManifestWorkSubjectServiceAccount,
+func (v *SarValidator) CheckEscalation(ctx context.Context, sa *workapiv1.ManifestWorkSubjectServiceAccount,
 	gvr schema.GroupVersionResource, namespace, name string, obj *unstructured.Unstructured) error {
 
 	if gvr.Group != "rbac.authorization.k8s.io" {

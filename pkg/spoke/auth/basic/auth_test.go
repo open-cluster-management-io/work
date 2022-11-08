@@ -1,4 +1,4 @@
-package auth
+package basic
 
 import (
 	"context"
@@ -187,7 +187,7 @@ func TestValidateEscalation(t *testing.T) {
 			}
 			return false, nil, nil
 		})
-	validator := &sarValidator{
+	validator := &SarValidator{
 		kubeClient: kubeClient,
 		newImpersonateClientFunc: func(config *rest.Config, username string) (dynamic.Interface, error) {
 			return dynamicClient, nil

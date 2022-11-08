@@ -34,6 +34,7 @@ import (
 	"open-cluster-management.io/work/pkg/helper"
 	"open-cluster-management.io/work/pkg/spoke/apply"
 	"open-cluster-management.io/work/pkg/spoke/auth"
+	"open-cluster-management.io/work/pkg/spoke/auth/basic"
 	"open-cluster-management.io/work/pkg/spoke/controllers"
 )
 
@@ -183,7 +184,7 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 
 		// If it is a forbidden error, after the condition is constructed, we set the error to nil
 		// and requeue the item
-		var authError = &auth.NotAllowedError{}
+		var authError = &basic.NotAllowedError{}
 		if errors.As(result.Error, &authError) {
 			klog.V(2).Infof("apply work %s fails with err: %v", manifestWorkName, result.Error)
 			result.Error = nil
