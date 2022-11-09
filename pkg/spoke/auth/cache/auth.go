@@ -26,6 +26,15 @@ import (
 type SubjectAccessReviewCheckFn func(ctx context.Context, executor *workapiv1.ManifestWorkSubjectServiceAccount,
 	gvr schema.GroupVersionResource, namespace, name string, ownedByTheWork bool) error
 
+type sarCacheValidator struct {
+	kubeClient                       kubernetes.Interface
+	executorCaches                   *store.ExecutorCaches
+	manifestWorkExecutorCachesLoader manifestWorkExecutorCachesLoader
+	validator                        *basic.SarValidator
+	spokeInformer                    informers.SharedInformerFactory
+	cacheController                  factory.Controller
+}
+
 // NewExecutorCacheValidator creates a sarCacheValidator
 func NewExecutorCacheValidator(
 	ctx context.Context,
@@ -36,6 +45,11 @@ func NewExecutorCacheValidator(
 	validator *basic.SarValidator,
 ) *sarCacheValidator {
 
+	manifestWorkExecutorCachesLoader := &defaultManifestWorkExecutorCachesLoader{
+		manifestWorkLister: manifestWorkLister,
+		restMapper:         restMapper,
+	}
+
 	executorCaches := store.NewExecutorCache()
 
 	// the spokeKubeInformerFactory will only be used for the executor cache controller, and we do not want to
@@ -43,19 +57,19 @@ func NewExecutorCacheValidator(
 	spokeKubeInformerFactory := informers.NewSharedInformerFactoryWithOptions(spokeKubeClient, 24*time.Hour)
 
 	v := &sarCacheValidator{
-		kubeClient:     spokeKubeClient,
-		validator:      validator,
-		executorCaches: executorCaches,
-		spokeInformer:  spokeKubeInformerFactory,
+		kubeClient:                       spokeKubeClient,
+		validator:                        validator,
+		executorCaches:                   executorCaches,
+		manifestWorkExecutorCachesLoader: manifestWorkExecutorCachesLoader,
+		spokeInformer:                    spokeKubeInformerFactory,
 	}
 
 	v.cacheController = NewExecutorCacheController(ctx, recorder,
-		manifestWorkLister,
 		v.spokeInformer.Rbac().V1().ClusterRoleBindings(),
 		v.spokeInformer.Rbac().V1().RoleBindings(),
 		v.spokeInformer.Rbac().V1().ClusterRoles(),
 		v.spokeInformer.Rbac().V1().Roles(),
-		restMapper,
+		manifestWorkExecutorCachesLoader,
 		executorCaches,
 		v.validator.CheckSubjectAccessReviews,
 	)
@@ -67,16 +81,14 @@ func NewExecutorCacheValidator(
 // It's an error to call Start more than once.
 // Start blocks; call via go.
 func (v *sarCacheValidator) Start(ctx context.Context) {
-	v.spokeInformer.Start(ctx.Done())
-	v.cacheController.Run(ctx, 1)
-}
+	// initialize the caches skelton in order to let others caches operands know which caches are necessary,
+	// otherwise, the roleBindingExecutorsMapper and clusterRoleBindingExecutorsMapper in the cache controller
+	// have no chance to initialize after the work pod restarts
+	v.manifestWorkExecutorCachesLoader.loadAllValuableCaches(v.executorCaches)
 
-type sarCacheValidator struct {
-	kubeClient      kubernetes.Interface
-	executorCaches  *store.ExecutorCaches
-	validator       *basic.SarValidator
-	spokeInformer   informers.SharedInformerFactory
-	cacheController factory.Controller
+	v.spokeInformer.Start(ctx.Done())
+	v.spokeInformer.WaitForCacheSync(ctx.Done())
+	v.cacheController.Run(ctx, 1)
 }
 
 func (v *sarCacheValidator) Validate(ctx context.Context, executor *workapiv1.ManifestWorkExecutor,
@@ -101,15 +113,16 @@ func (v *sarCacheValidator) Validate(ctx context.Context, executor *workapiv1.Ma
 		ExecuteAction: store.GetExecuteAction(ownedByTheWork),
 	}
 
-	if allow, ok := v.executorCaches.Get(executorKey, dimension); !ok {
+	allowed, ok := v.executorCaches.Get(executorKey, dimension)
+	if !ok || allowed == nil {
 		err := v.validator.CheckSubjectAccessReviews(ctx, sa, gvr, namespace, name, ownedByTheWork)
 		updateSARCheckResultToCache(v.executorCaches, executorKey, dimension, err)
 		if err != nil {
 			return err
 		}
 	} else {
-		klog.V(4).Infof("Get auth from cache executor %s, dimension: %+v allow: %v", executorKey, dimension, allow)
-		if !allow {
+		klog.V(4).Infof("Get auth from cache executor %s, dimension: %+v allow: %v", executorKey, dimension, *allowed)
+		if !*allowed {
 			return &basic.NotAllowedError{
 				Err: fmt.Errorf("not allowed to apply the resource %s %s, %s %s",
 					gvr.Group, gvr.Resource, namespace, name),
@@ -124,12 +137,13 @@ func (v *sarCacheValidator) Validate(ctx context.Context, executor *workapiv1.Ma
 // updateSARCheckResultToCache updates the subjectAccessReview checking result to the executor cache
 func updateSARCheckResultToCache(executorCaches *store.ExecutorCaches, executorKey string,
 	dimension store.Dimension, result error) {
+	t, f := true, false
 	if result == nil {
-		executorCaches.Add(executorKey, dimension, true)
+		executorCaches.Add(executorKey, dimension, &t)
 	}
 
 	var authError = &basic.NotAllowedError{}
 	if errors.As(result, &authError) {
-		executorCaches.Add(executorKey, dimension, false)
+		executorCaches.Add(executorKey, dimension, &f)
 	}
 }

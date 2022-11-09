@@ -115,7 +115,8 @@ func (o *WorkloadAgentOptions) RunWorkloadAgent(ctx context.Context, controllerC
 	validator := auth.NewFactory(
 		spokeRestConfig,
 		spokeKubeClient,
-		workInformerFactory.Work().V1().ManifestWorks().Lister().ManifestWorks(o.SpokeClusterName),
+		workInformerFactory.Work().V1().ManifestWorks(),
+		o.SpokeClusterName,
 		controllerContext.EventRecorder,
 		restMapper,
 	).NewExecutorValidator(ctx, enableExecutorCache)

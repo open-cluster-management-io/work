@@ -67,7 +67,8 @@ type DimensionCaches struct {
 // CacheValue contains the cached result and the dimension
 type CacheValue struct {
 	Dimension Dimension
-	Allowed   bool
+	// pointer can differ from default false value
+	Allowed *bool
 }
 
 // Dimension represents the dimension of the cache, it determines what the cache is for.
@@ -81,7 +82,7 @@ type Dimension struct {
 }
 
 // Add adds a cache item if it does not exist, updates the item if it does
-func (c *ExecutorCaches) Add(executor string, dimension Dimension, allowed bool) {
+func (c *ExecutorCaches) Add(executor string, dimension Dimension, allowed *bool) {
 	oldDimensionCaches, ok := c.getDimensionCaches(executor)
 	if !ok {
 		c.addNewDimensionCaches(executor)
@@ -92,11 +93,13 @@ func (c *ExecutorCaches) Add(executor string, dimension Dimension, allowed bool)
 	oldDimensionCaches.add(dimension, allowed)
 }
 
-// Get get an cache item and existence by the dimension
-func (c *ExecutorCaches) Get(executor string, dimension Dimension) (bool, bool) {
+// Get gets a cache item value and existence by the dimension
+// if the cacheExistence is false that indicates the executor/dimension cache item does not exist in the caches
+// if the cacheExistence is true but the allowed is nil that means the caches do not if it is allowed
+func (c *ExecutorCaches) Get(executor string, dimension Dimension) (allowed *bool, cacheExistence bool) {
 	oldDimensionCaches, ok := c.getDimensionCaches(executor)
 	if !ok {
-		return false, false
+		return nil, false
 	}
 
 	return oldDimensionCaches.get(dimension.Hash())
@@ -200,11 +203,11 @@ func (c *ExecutorCaches) getCacheItems() map[string]*DimensionCaches {
 	return c.items
 }
 
-// getByHash get an cache item and existence by the dimension hash
-func (c *ExecutorCaches) getByHash(executor string, hash string) (bool, bool) {
+// getByHash gets a cache item value and existence by the dimension hash
+func (c *ExecutorCaches) getByHash(executor string, hash string) (*bool, bool) {
 	oldDimensionCaches, ok := c.getDimensionCaches(executor)
 	if !ok {
-		return false, false
+		return nil, false
 	}
 
 	return oldDimensionCaches.get(hash)
@@ -222,18 +225,18 @@ func (c *DimensionCaches) remove(hash string) {
 	delete(c.items, hash)
 }
 
-func (c *DimensionCaches) get(hash string) (bool, bool) {
+func (c *DimensionCaches) get(hash string) (*bool, bool) {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
 
 	value, ok := c.items[hash]
 	if !ok {
-		return false, false
+		return nil, false
 	}
 	return value.Allowed, true
 }
 
-func (c *DimensionCaches) add(dimension Dimension, allowed bool) {
+func (c *DimensionCaches) add(dimension Dimension, allowed *bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	c.items[dimension.Hash()] = CacheValue{

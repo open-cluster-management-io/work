@@ -9,17 +9,14 @@ import (
 	"github.com/openshift/library-go/pkg/operator/events"
 	rbacapiv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	rbacv1 "k8s.io/client-go/informers/rbac/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
-
-	worklister "open-cluster-management.io/api/client/work/listers/work/v1"
 	workapiv1 "open-cluster-management.io/api/work/v1"
-	"open-cluster-management.io/work/pkg/helper"
+
 	"open-cluster-management.io/work/pkg/spoke/auth/store"
 )
 
@@ -30,10 +27,9 @@ var (
 // CacheController is to reconcile the executor auth result for manfiestwork workloads
 // on spoke cluster.
 type CacheController struct {
-	manifestWorkLister worklister.ManifestWorkNamespaceLister
-	executorCaches     *store.ExecutorCaches
-	sarCheckerFn       SubjectAccessReviewCheckFn
-	restMapper         meta.RESTMapper
+	executorCaches                   *store.ExecutorCaches
+	sarCheckerFn                     SubjectAccessReviewCheckFn
+	manifestWorkExecutorCachesLoader manifestWorkExecutorCachesLoader
 
 	roleBindingExecutorsMapper        map[string][]string
 	clusterRoleBindingExecutorsMapper map[string][]string
@@ -43,19 +39,17 @@ type CacheController struct {
 func NewExecutorCacheController(
 	ctx context.Context,
 	recorder events.Recorder,
-	manifestWorkLister worklister.ManifestWorkNamespaceLister,
 	crbInformer rbacv1.ClusterRoleBindingInformer,
 	rbInformer rbacv1.RoleBindingInformer,
 	crInformer rbacv1.ClusterRoleInformer,
 	rInformer rbacv1.RoleInformer,
-	restMapper meta.RESTMapper,
+	manifestWorkExecutorCachesLoader manifestWorkExecutorCachesLoader,
 	executorCaches *store.ExecutorCaches,
 	sarCheckerFn SubjectAccessReviewCheckFn,
 ) factory.Controller {
 
 	controller := &CacheController{
-		manifestWorkLister:                manifestWorkLister,
-		restMapper:                        restMapper,
+		manifestWorkExecutorCachesLoader:  manifestWorkExecutorCachesLoader,
 		executorCaches:                    executorCaches,
 		sarCheckerFn:                      sarCheckerFn,
 		roleBindingExecutorsMapper:        make(map[string][]string),
@@ -181,7 +175,7 @@ func (c *CacheController) bindingResourceUpsertEnqueueFn(
 		}
 		if len(executors) > 0 {
 			bindingExecutorsMapper[key] = executors
-			klog.V(4).Infof("binding executor mapper upsert key %s executors %s", key, executors)
+			klog.V(4).Infof("Binding executor mapper upsert key %s executors %s", key, executors)
 		}
 	}
 }
@@ -202,13 +196,13 @@ func (c *CacheController) bindingResourceDeleteEnqueueFn(
 			for _, executor := range bindingExecutorsMapper[key] {
 				syncCtx.Queue().Add(executor)
 				enqueued = true
-				klog.V(4).Infof("deletion event, enqueue executor %s from binding executor mapper key %s", executor, key)
+				klog.V(4).Infof("Deletion event, enqueue executor %s from binding executor mapper key %s", executor, key)
 			}
 		}
 
 		if enqueued {
 			delete(bindingExecutorsMapper, key)
-			klog.V(4).Infof("binding executor mapper delete key %s", key)
+			klog.V(4).Infof("Binding executor mapper delete key %s", key)
 		}
 	}
 }
@@ -270,61 +264,7 @@ func (c *CacheController) iterateCacheItemsFn(ctx context.Context,
 }
 
 func (c *CacheController) cleanupUnnecessaryCache() {
-	c.executorCaches.CleanupUnnecessaryCaches(c.getAllValuableCache())
-}
-
-func (c *CacheController) getAllValuableCache() *store.ExecutorCaches {
 	retainableCache := store.NewExecutorCache()
-
-	mws, err := c.manifestWorkLister.List(labels.Everything())
-	if err != nil {
-		klog.Infof("cleanup cache, list manifestworks error: %v", err)
-		return retainableCache
-	}
-
-	for _, mw := range mws {
-		var executor string
-		if mw.Spec.Executor == nil {
-			continue
-		}
-		if mw.Spec.Executor.Subject.Type != workapiv1.ExecutorSubjectTypeServiceAccount {
-			continue
-		}
-		if mw.Spec.Executor.Subject.ServiceAccount == nil {
-			continue
-		}
-
-		executor = store.ExecutorKey(
-			mw.Spec.Executor.Subject.ServiceAccount.Namespace, mw.Spec.Executor.Subject.ServiceAccount.Name)
-
-		for _, manifest := range mw.Status.ResourceStatus.Manifests {
-
-			mapping, err := c.restMapper.RESTMapping(schema.GroupKind{
-				Group: manifest.ResourceMeta.Group,
-				Kind:  manifest.ResourceMeta.Kind,
-			}, manifest.ResourceMeta.Version)
-			if err != nil {
-				klog.Infof("the server doesn't have a resource type %q", manifest.ResourceMeta.Kind)
-				continue
-			}
-
-			gvr := mapping.Resource
-			// check if the resource to be applied should be owned by the manifest work
-			ownedByTheWork := helper.OwnedByTheWork(gvr, manifest.ResourceMeta.Namespace, manifest.ResourceMeta.Name,
-				mw.Spec.DeleteOption)
-
-			retainableCache.Add(executor, store.Dimension{
-				Group:         manifest.ResourceMeta.Group,
-				Version:       manifest.ResourceMeta.Version,
-				Resource:      gvr.Resource,
-				Namespace:     manifest.ResourceMeta.Namespace,
-				Name:          manifest.ResourceMeta.Name,
-				ExecuteAction: store.GetExecuteAction(ownedByTheWork),
-			},
-				false, // use false as a fake value
-			)
-		}
-	}
-
-	return retainableCache
+	c.manifestWorkExecutorCachesLoader.loadAllValuableCaches(retainableCache)
+	c.executorCaches.CleanupUnnecessaryCaches(retainableCache)
 }
