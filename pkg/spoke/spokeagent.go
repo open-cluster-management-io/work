@@ -26,13 +26,14 @@ import (
 
 // WorkloadAgentOptions defines the flags for workload agent
 type WorkloadAgentOptions struct {
-	HubKubeconfigFile   string
-	SpokeKubeconfigFile string
-	SpokeClusterName    string
-	QPS                 float32
-	Burst               int
-	StatusSyncInterval  time.Duration
-	AgentID             string
+	HubKubeconfigFile    string
+	SpokeKubeconfigFile  string
+	SpokeClusterName     string
+	QPS                  float32
+	Burst                int
+	StatusSyncInterval   time.Duration
+	AgentID              string
+	EnableExecutorCaches bool
 }
 
 // NewWorkloadAgentOptions returns the flags with default value set
@@ -56,6 +57,7 @@ func (o *WorkloadAgentOptions) AddFlags(cmd *cobra.Command) {
 	flags.Float32Var(&o.QPS, "spoke-kube-api-qps", o.QPS, "QPS to use while talking with apiserver on spoke cluster.")
 	flags.IntVar(&o.Burst, "spoke-kube-api-burst", o.Burst, "Burst to use while talking with apiserver on spoke cluster.")
 	flags.DurationVar(&o.StatusSyncInterval, "status-sync-interval", o.StatusSyncInterval, "Interval to sync resource status to hub.")
+	flags.BoolVar(&o.EnableExecutorCaches, "enable-executor-caches", o.EnableExecutorCaches, "Whether to enable the executor caches function.")
 }
 
 // RunWorkloadAgent starts the controllers on agent to process work from hub.
@@ -110,8 +112,6 @@ func (o *WorkloadAgentOptions) RunWorkloadAgent(ctx context.Context, controllerC
 		return err
 	}
 
-	// TODO: read this from flag
-	enableExecutorCache := true
 	validator := auth.NewFactory(
 		spokeRestConfig,
 		spokeKubeClient,
@@ -119,7 +119,7 @@ func (o *WorkloadAgentOptions) RunWorkloadAgent(ctx context.Context, controllerC
 		o.SpokeClusterName,
 		controllerContext.EventRecorder,
 		restMapper,
-	).NewExecutorValidator(ctx, enableExecutorCache)
+	).NewExecutorValidator(ctx, o.EnableExecutorCaches)
 
 	manifestWorkController := manifestcontroller.NewManifestWorkController(
 		ctx,

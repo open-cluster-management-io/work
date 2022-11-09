@@ -10,6 +10,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	k8scache "k8s.io/client-go/tools/cache"
+	"k8s.io/klog/v2"
 	workinformers "open-cluster-management.io/api/client/work/informers/externalversions/work/v1"
 	workapiv1 "open-cluster-management.io/api/work/v1"
 
@@ -20,8 +21,8 @@ import (
 // ExecutorValidator validates whether the executor has permission to perform the requests
 // to the local managed cluster
 type ExecutorValidator interface {
-	// Validate whether the work executor subject has permission to perform action on the specific manifest,
-	// if there is no permission will return a kubernetes forbidden error.
+	// Validate whether the work executor subject has permission to operate the specific manifest,
+	// if there is no permission will return a basic.NotAllowedError.
 	Validate(ctx context.Context, executor *workapiv1.ManifestWorkExecutor, gvr schema.GroupVersionResource,
 		namespace, name string, ownedByTheWork bool, obj *unstructured.Unstructured) error
 }
@@ -53,6 +54,7 @@ func NewFactory(
 }
 
 func (f *validatorFactory) NewExecutorValidator(ctx context.Context, isCacheValidator bool) ExecutorValidator {
+	klog.Infof("Executor caches enabled: %v", isCacheValidator)
 	sarValidator := basic.NewSARValidator(f.config, f.kubeClient)
 	if !isCacheValidator {
 		return sarValidator

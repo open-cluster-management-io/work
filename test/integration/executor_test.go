@@ -30,6 +30,7 @@ var _ = ginkgo.Describe("ManifestWork Executor Subject", func() {
 		o.HubKubeconfigFile = hubKubeconfigFileName
 		o.SpokeClusterName = utilrand.String(5)
 		o.StatusSyncInterval = 3 * time.Second
+		o.EnableExecutorCaches = true
 
 		ns := &corev1.Namespace{}
 		ns.Name = o.SpokeClusterName

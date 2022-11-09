@@ -35,7 +35,9 @@ type CacheController struct {
 	clusterRoleBindingExecutorsMapper map[string][]string
 }
 
-// NewExecutorCacheController returns an ExecutorCacheController
+// NewExecutorCacheController returns an ExecutorCacheController, the controller will watch all the RBAC resources(role,
+// rolebinding, clusterrole, clusterrolebinding) related to the executors used by the manifestworks, and update the
+// caches of the corresponding executor when the RBAC resources change
 func NewExecutorCacheController(
 	ctx context.Context,
 	recorder events.Recorder,

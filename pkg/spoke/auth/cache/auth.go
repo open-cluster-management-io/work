@@ -91,6 +91,9 @@ func (v *sarCacheValidator) Start(ctx context.Context) {
 	v.cacheController.Run(ctx, 1)
 }
 
+// Validate checks whether the executor has permission to operate the specific gvr resource.
+// it will first try to get the subject access review checking result from caches, if there is no result in caches,
+// then it will send sar requests to the api server and store the result into caches.
 func (v *sarCacheValidator) Validate(ctx context.Context, executor *workapiv1.ManifestWorkExecutor,
 	gvr schema.GroupVersionResource, namespace, name string,
 	ownedByTheWork bool, obj *unstructured.Unstructured) error {

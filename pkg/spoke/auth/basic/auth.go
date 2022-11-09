@@ -31,6 +31,7 @@ func (e *NotAllowedError) Error() string {
 	return err
 }
 
+// NewSARValidator creates a SARValidator
 func NewSARValidator(config *rest.Config, kubeClient kubernetes.Interface) *SarValidator {
 	return &SarValidator{
 		kubeClient:               kubeClient,
@@ -56,6 +57,8 @@ func defaultNewImpersonateClient(config *rest.Config, username string) (dynamic.
 	return dynamic.NewForConfig(&impersonatedConfig)
 }
 
+// Validate checks whether the executor has permission to operate the specific gvr resource by
+// sending sar requests to the api server.
 func (v *SarValidator) Validate(ctx context.Context, executor *workapiv1.ManifestWorkExecutor,
 	gvr schema.GroupVersionResource, namespace, name string,
 	ownedByTheWork bool, obj *unstructured.Unstructured) error {
@@ -76,6 +79,7 @@ func (v *SarValidator) Validate(ctx context.Context, executor *workapiv1.Manifes
 	return v.CheckEscalation(ctx, executor.Subject.ServiceAccount, gvr, namespace, name, obj)
 }
 
+// ExecutorBasicCheck do some basic checks for the executor
 func (v *SarValidator) ExecutorBasicCheck(executor *workapiv1.ManifestWorkExecutor) error {
 	if executor.Subject.Type != workapiv1.ExecutorSubjectTypeServiceAccount {
 		return fmt.Errorf("only support %s type for the executor", workapiv1.ExecutorSubjectTypeServiceAccount)
@@ -89,6 +93,7 @@ func (v *SarValidator) ExecutorBasicCheck(executor *workapiv1.ManifestWorkExecut
 	return nil
 }
 
+// CheckSubjectAccessReviews checks if the sa has permission to operate the gvr resource by subjectAccessReview requests
 func (v *SarValidator) CheckSubjectAccessReviews(ctx context.Context, sa *workapiv1.ManifestWorkSubjectServiceAccount,
 	gvr schema.GroupVersionResource, namespace, name string, ownedByTheWork bool) error {
 
@@ -126,6 +131,7 @@ func (v *SarValidator) CheckSubjectAccessReviews(ctx context.Context, sa *workap
 	return nil
 }
 
+// CheckEscalation checks whether the sa is escalated to operate the gvr(RBAC) resources.
 func (v *SarValidator) CheckEscalation(ctx context.Context, sa *workapiv1.ManifestWorkSubjectServiceAccount,
 	gvr schema.GroupVersionResource, namespace, name string, obj *unstructured.Unstructured) error {
 
