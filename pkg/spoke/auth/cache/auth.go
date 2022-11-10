@@ -142,11 +142,11 @@ func updateSARCheckResultToCache(executorCaches *store.ExecutorCaches, executorK
 	dimension store.Dimension, result error) {
 	t, f := true, false
 	if result == nil {
-		executorCaches.Add(executorKey, dimension, &t)
+		executorCaches.Upsert(executorKey, dimension, &t)
 	}
 
 	var authError = &basic.NotAllowedError{}
 	if errors.As(result, &authError) {
-		executorCaches.Add(executorKey, dimension, &f)
+		executorCaches.Upsert(executorKey, dimension, &f)
 	}
 }

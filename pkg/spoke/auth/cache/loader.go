@@ -67,7 +67,7 @@ func (g *defaultManifestWorkExecutorCachesLoader) loadAllValuableCaches(retainab
 			ownedByTheWork := helper.OwnedByTheWork(gvr, manifest.ResourceMeta.Namespace, manifest.ResourceMeta.Name,
 				mw.Spec.DeleteOption)
 
-			retainableCache.Add(executor, store.Dimension{
+			retainableCache.Upsert(executor, store.Dimension{
 				Group:         manifest.ResourceMeta.Group,
 				Version:       manifest.ResourceMeta.Version,
 				Resource:      gvr.Resource,

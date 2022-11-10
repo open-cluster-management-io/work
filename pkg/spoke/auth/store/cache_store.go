@@ -81,16 +81,11 @@ type Dimension struct {
 	ExecuteAction ExecuteAction
 }
 
-// Add adds a cache item if it does not exist, updates the item if it does
-func (c *ExecutorCaches) Add(executor string, dimension Dimension, allowed *bool) {
-	oldDimensionCaches, ok := c.getDimensionCaches(executor)
-	if !ok {
-		c.addNewDimensionCaches(executor)
-		c.Add(executor, dimension, allowed)
-		return
-	}
-
-	oldDimensionCaches.add(dimension, allowed)
+// Upsert will insert a new cache item or update the existing cache item
+func (c *ExecutorCaches) Upsert(executor string, dimension Dimension, allowed *bool) {
+	c.upsertDimensionCaches(executor)
+	oldDimensionCaches, _ := c.getDimensionCaches(executor)
+	oldDimensionCaches.upsert(dimension, allowed)
 }
 
 // Get gets a cache item value and existence by the dimension
@@ -173,10 +168,14 @@ func (c *ExecutorCaches) DimensionCachesExists(executor string) bool {
 	return ok
 }
 
-// addNewDimensionCaches adds a dimension caches by the executor if it does not exist, updates it if it does
-func (c *ExecutorCaches) addNewDimensionCaches(executor string) {
+// upsertDimensionCaches will insert new dimension caches or update existing dimension caches
+func (c *ExecutorCaches) upsertDimensionCaches(executor string) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+	_, ok := c.items[executor]
+	if ok {
+		return
+	}
 	dimensionCaches := &DimensionCaches{
 		lock:  sync.RWMutex{},
 		items: make(map[string]CacheValue),
@@ -236,7 +235,8 @@ func (c *DimensionCaches) get(hash string) (*bool, bool) {
 	return value.Allowed, true
 }
 
-func (c *DimensionCaches) add(dimension Dimension, allowed *bool) {
+// upsert will insert a new cache value or update the existing cache value
+func (c *DimensionCaches) upsert(dimension Dimension, allowed *bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	c.items[dimension.Hash()] = CacheValue{
