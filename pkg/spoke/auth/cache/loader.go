@@ -2,8 +2,8 @@ package cache
 
 import (
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
 	worklister "open-cluster-management.io/api/client/work/listers/work/v1"
 	workapiv1 "open-cluster-management.io/api/work/v1"
@@ -51,32 +51,35 @@ func (g *defaultManifestWorkExecutorCachesLoader) loadAllValuableCaches(retainab
 		executor = store.ExecutorKey(
 			mw.Spec.Executor.Subject.ServiceAccount.Namespace, mw.Spec.Executor.Subject.ServiceAccount.Name)
 
-		for _, manifest := range mw.Status.ResourceStatus.Manifests {
-
-			mapping, err := g.restMapper.RESTMapping(schema.GroupKind{
-				Group: manifest.ResourceMeta.Group,
-				Kind:  manifest.ResourceMeta.Kind,
-			}, manifest.ResourceMeta.Version)
-			if err != nil {
-				klog.Infof("the server doesn't have a resource type %q", manifest.ResourceMeta.Kind)
+		for index, manifest := range mw.Spec.Workload.Manifests {
+			// parse the required and set resource meta
+			required := &unstructured.Unstructured{}
+			if err := required.UnmarshalJSON(manifest.Raw); err != nil {
+				klog.Infof("UnmarshalJSON for the manifest work %s index %d failed %v", mw.Name, index, err)
 				continue
 			}
 
-			gvr := mapping.Resource
+			resMeta, gvr, err := helper.BuildResourceMeta(index, required, g.restMapper)
+			if err != nil {
+				klog.Infof("Build resource meta for the manifest work %s index %d failed %v", mw.Name, index, err)
+				continue
+			}
+
 			// check if the resource to be applied should be owned by the manifest work
-			ownedByTheWork := helper.OwnedByTheWork(gvr, manifest.ResourceMeta.Namespace, manifest.ResourceMeta.Name,
+			ownedByTheWork := helper.OwnedByTheWork(gvr, resMeta.Namespace, resMeta.Name,
 				mw.Spec.DeleteOption)
 
 			retainableCache.Upsert(executor, store.Dimension{
-				Group:         manifest.ResourceMeta.Group,
-				Version:       manifest.ResourceMeta.Version,
-				Resource:      gvr.Resource,
-				Namespace:     manifest.ResourceMeta.Namespace,
-				Name:          manifest.ResourceMeta.Name,
+				Group:         resMeta.Group,
+				Version:       resMeta.Version,
+				Resource:      resMeta.Resource,
+				Namespace:     resMeta.Namespace,
+				Name:          resMeta.Name,
 				ExecuteAction: store.GetExecuteAction(ownedByTheWork),
 			},
 				nil, // nil means we do not know if it is allowed or not
 			)
+
 		}
 	}
 }

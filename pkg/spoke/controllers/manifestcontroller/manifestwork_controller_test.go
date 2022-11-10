@@ -704,7 +704,7 @@ func TestBuildResourceMeta(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			actual, _, err := buildResourceMeta(0, c.object, c.restMapper)
+			actual, _, err := helper.BuildResourceMeta(0, c.object, c.restMapper)
 			if err != nil {
 				t.Errorf("Should be success with no err: %v", err)
 			}
@@ -735,7 +735,7 @@ func TestBuildManifestResourceMeta(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			actual, _, err := buildResourceMeta(0, c.manifestObject, c.restMapper)
+			actual, _, err := helper.BuildResourceMeta(0, c.manifestObject, c.restMapper)
 			if err != nil {
 				t.Errorf("Should be success with no err: %v", err)
 			}

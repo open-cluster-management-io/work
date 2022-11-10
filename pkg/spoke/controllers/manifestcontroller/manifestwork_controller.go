@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"time"
 
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
@@ -14,7 +13,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/dynamic"
@@ -313,7 +311,7 @@ func (m *ManifestWorkController) applyOneManifest(
 		return result
 	}
 
-	resMeta, gvr, err := buildResourceMeta(index, required, m.restMapper)
+	resMeta, gvr, err := helper.BuildResourceMeta(index, required, m.restMapper)
 	result.resourceMeta = resMeta
 	if err != nil {
 		result.Error = err
@@ -435,46 +433,4 @@ func buildAppliedStatusCondition(result applyResult) metav1.Condition {
 		Reason:  "AppliedManifestComplete",
 		Message: "Apply manifest complete",
 	}
-}
-
-func buildResourceMeta(
-	index int,
-	object runtime.Object,
-	restMapper meta.RESTMapper) (workapiv1.ManifestResourceMeta, schema.GroupVersionResource, error) {
-	resourceMeta := workapiv1.ManifestResourceMeta{
-		Ordinal: int32(index),
-	}
-
-	if object == nil || reflect.ValueOf(object).IsNil() {
-		return resourceMeta, schema.GroupVersionResource{}, nil
-	}
-
-	// set gvk
-	gvk, err := helper.GuessObjectGroupVersionKind(object)
-	if err != nil {
-		return resourceMeta, schema.GroupVersionResource{}, err
-	}
-	resourceMeta.Group = gvk.Group
-	resourceMeta.Version = gvk.Version
-	resourceMeta.Kind = gvk.Kind
-
-	// set namespace/name
-	if accessor, e := meta.Accessor(object); e != nil {
-		err = fmt.Errorf("cannot access metadata of %v: %w", object, e)
-	} else {
-		resourceMeta.Namespace = accessor.GetNamespace()
-		resourceMeta.Name = accessor.GetName()
-	}
-
-	// set resource
-	if restMapper == nil {
-		return resourceMeta, schema.GroupVersionResource{}, err
-	}
-	mapping, err := restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
-	if err != nil {
-		return resourceMeta, schema.GroupVersionResource{}, fmt.Errorf("the server doesn't have a resource type %q", gvk.Kind)
-	}
-
-	resourceMeta.Resource = mapping.Resource.Resource
-	return resourceMeta, mapping.Resource, err
 }
