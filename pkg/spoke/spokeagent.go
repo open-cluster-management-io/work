@@ -7,6 +7,8 @@ import (
 
 	workclientset "open-cluster-management.io/api/client/work/clientset/versioned"
 	workinformers "open-cluster-management.io/api/client/work/informers/externalversions"
+	ocmfeature "open-cluster-management.io/api/feature"
+	"open-cluster-management.io/work/pkg/features"
 	"open-cluster-management.io/work/pkg/helper"
 	"open-cluster-management.io/work/pkg/spoke/auth"
 	"open-cluster-management.io/work/pkg/spoke/controllers/appliedmanifestcontroller"
@@ -26,14 +28,13 @@ import (
 
 // WorkloadAgentOptions defines the flags for workload agent
 type WorkloadAgentOptions struct {
-	HubKubeconfigFile    string
-	SpokeKubeconfigFile  string
-	SpokeClusterName     string
-	QPS                  float32
-	Burst                int
-	StatusSyncInterval   time.Duration
-	AgentID              string
-	EnableExecutorCaches bool
+	HubKubeconfigFile   string
+	SpokeKubeconfigFile string
+	SpokeClusterName    string
+	QPS                 float32
+	Burst               int
+	StatusSyncInterval  time.Duration
+	AgentID             string
 }
 
 // NewWorkloadAgentOptions returns the flags with default value set
@@ -48,6 +49,7 @@ func NewWorkloadAgentOptions() *WorkloadAgentOptions {
 // AddFlags register and binds the default flags
 func (o *WorkloadAgentOptions) AddFlags(cmd *cobra.Command) {
 	flags := cmd.Flags()
+	features.DefaultSpokeMutableFeatureGate.AddFlag(flags)
 	// This command only supports reading from config
 	flags.StringVar(&o.HubKubeconfigFile, "hub-kubeconfig", o.HubKubeconfigFile, "Location of kubeconfig file to connect to hub cluster.")
 	flags.StringVar(&o.SpokeKubeconfigFile, "spoke-kubeconfig", o.SpokeKubeconfigFile,
@@ -57,7 +59,6 @@ func (o *WorkloadAgentOptions) AddFlags(cmd *cobra.Command) {
 	flags.Float32Var(&o.QPS, "spoke-kube-api-qps", o.QPS, "QPS to use while talking with apiserver on spoke cluster.")
 	flags.IntVar(&o.Burst, "spoke-kube-api-burst", o.Burst, "Burst to use while talking with apiserver on spoke cluster.")
 	flags.DurationVar(&o.StatusSyncInterval, "status-sync-interval", o.StatusSyncInterval, "Interval to sync resource status to hub.")
-	flags.BoolVar(&o.EnableExecutorCaches, "enable-executor-caches", o.EnableExecutorCaches, "Whether to enable the executor caches function.")
 }
 
 // RunWorkloadAgent starts the controllers on agent to process work from hub.
@@ -119,7 +120,7 @@ func (o *WorkloadAgentOptions) RunWorkloadAgent(ctx context.Context, controllerC
 		o.SpokeClusterName,
 		controllerContext.EventRecorder,
 		restMapper,
-	).NewExecutorValidator(ctx, o.EnableExecutorCaches)
+	).NewExecutorValidator(ctx, features.DefaultSpokeMutableFeatureGate.Enabled(ocmfeature.ExecutorValidatingCaches))
 
 	manifestWorkController := manifestcontroller.NewManifestWorkController(
 		ctx,

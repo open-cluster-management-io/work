@@ -73,7 +73,7 @@ func TestValidate(t *testing.T) {
 			},
 			expect: fmt.Errorf("the executor service account is nil"),
 		},
-		"forbideen": {
+		"forbidden": {
 			executor: &workapiv1.ManifestWorkExecutor{
 				Subject: workapiv1.ManifestWorkExecutorSubject{
 					Type: workapiv1.ExecutorSubjectTypeServiceAccount,
@@ -162,7 +162,7 @@ func TestCacheWorks(t *testing.T) {
 		name      string
 		expect    error
 	}{
-		"forbideen": {
+		"forbidden": {
 			executor:  executor,
 			namespace: "test-deny",
 			name:      "test",

@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilrand "k8s.io/apimachinery/pkg/util/rand"
 	workapiv1 "open-cluster-management.io/api/work/v1"
+	"open-cluster-management.io/work/pkg/features"
 	"open-cluster-management.io/work/pkg/spoke"
 	"open-cluster-management.io/work/test/integration/util"
 )
@@ -30,11 +31,12 @@ var _ = ginkgo.Describe("ManifestWork Executor Subject", func() {
 		o.HubKubeconfigFile = hubKubeconfigFileName
 		o.SpokeClusterName = utilrand.String(5)
 		o.StatusSyncInterval = 3 * time.Second
-		o.EnableExecutorCaches = true
+		err := features.DefaultSpokeMutableFeatureGate.Set("ExecutorValidatingCaches=true")
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 		ns := &corev1.Namespace{}
 		ns.Name = o.SpokeClusterName
-		_, err := spokeKubeClient.CoreV1().Namespaces().Create(context.Background(), ns, metav1.CreateOptions{})
+		_, err = spokeKubeClient.CoreV1().Namespaces().Create(context.Background(), ns, metav1.CreateOptions{})
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 		var ctx context.Context

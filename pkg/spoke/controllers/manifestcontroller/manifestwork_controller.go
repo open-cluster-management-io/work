@@ -182,7 +182,7 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 
 		// If it is a forbidden error, after the condition is constructed, we set the error to nil
 		// and requeue the item
-		var authError = &basic.NotAllowedError{}
+		var authError *basic.NotAllowedError
 		if errors.As(result.Error, &authError) {
 			klog.V(2).Infof("apply work %s fails with err: %v", manifestWorkName, result.Error)
 			result.Error = nil
@@ -193,7 +193,7 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 		}
 
 		// ignore server side apply conflict error since it cannot be resolved by error fallback.
-		var ssaConflict = &apply.ServerSideApplyConflictError{}
+		var ssaConflict *apply.ServerSideApplyConflictError
 		if result.Error != nil && !errors.As(result.Error, &ssaConflict) {
 			errs = append(errs, result.Error)
 		}

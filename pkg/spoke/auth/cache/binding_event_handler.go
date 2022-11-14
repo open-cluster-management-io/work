@@ -6,10 +6,6 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// type BindingTypes interface {
-// 	*rbacapiv1.RoleBinding | *rbacapiv1.ClusterRoleBinding
-// }
-
 type roleBindingEventHandler struct {
 	enqueueUpsertFunc func(key string, subjects []rbacapiv1.Subject)
 	enqueueDeleteFunc func(key string, subjects []rbacapiv1.Subject)
@@ -28,7 +24,9 @@ func (h *roleBindingEventHandler) OnUpdate(oldObj, newObj interface{}) {
 }
 
 func (h *roleBindingEventHandler) OnDelete(obj interface{}) {
-
+	// For delete event, We will try to get the corresponding executor from the deleted Rolebinding Spec
+	// and then enqueue it; but when the Rolebinding cannot be obtained after being deleted,
+	// enqueueDeleteFunc will get the corresponding executor by some other way(e.g. from a cache)
 	if rb, ok := obj.(*rbacapiv1.RoleBinding); ok {
 		key, _ := cache.MetaNamespaceKeyFunc(rb)
 		h.enqueueDeleteFunc(key, rb.Subjects)

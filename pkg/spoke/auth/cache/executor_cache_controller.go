@@ -25,13 +25,25 @@ var (
 	ResyncInterval = 10 * time.Minute
 )
 
-// CacheController is to reconcile the executor auth result for manfiestwork workloads
-// on spoke cluster.
+// CacheController is to refresh the executor auth result for manfiestwork workloads on the spoke cluster.
 type CacheController struct {
-	executorCaches                   *store.ExecutorCaches
-	sarCheckerFn                     SubjectAccessReviewCheckFn
+	// executorCaches caches the subject access review results of a specific resource for executors
+	executorCaches *store.ExecutorCaches
+	sarCheckerFn   SubjectAccessReviewCheckFn
+	// manifestWorkExecutorCachesLoader can load all valuable caches in the current state cluster into an
+	// executor cache data structure. This is used by the controller to clean up unneeded items in the
+	// executor caches every ResyncInterval period.
 	manifestWorkExecutorCachesLoader manifestWorkExecutorCachesLoader
-	bindingExecutorsMapper           *safeMap
+	// bindingExecutorsMapper caches the mapping relationship between binding resources(ClusterRoleBinding &
+	// RoleBinding) and executors. The reason why we need this is that there is a case: when the binding
+	// resources are deleted, and we can only get the binding resource key, but can not get its object(spec),
+	// so we can not get the corresponding executor.
+	//
+	// The key of the map could be:
+	// - a ClusterRoleBinding, in the format of "cluster-role-binding-name"
+	// - OR a RoleBinding, in the format of "role-binding-namespace/role-binding-name"
+	// The value of the map is the executor in the format of "executor-namespace/executor-name"
+	bindingExecutorsMapper *safeMap
 }
 
 // NewExecutorCacheController returns an ExecutorCacheController, the controller will watch all the RBAC resources(role,
@@ -110,12 +122,10 @@ func newControllerInner(controller *CacheController,
 	return factory.New().
 		WithSyncContext(syncCtx).
 		WithInformersQueueKeysFunc(
-			roleEnqueueFu(rbInformer.Informer().GetIndexer(), controller.executorCaches),
+			controller.roleEnqueueFu(rbInformer.Informer().GetIndexer()),
 			rInformer.Informer()).
 		WithInformersQueueKeysFunc(
-			clusterRoleEnqueueFu(
-				rbInformer.Informer().GetIndexer(), crbInformer.Informer().GetIndexer(),
-				controller.executorCaches),
+			controller.clusterRoleEnqueueFu(rbInformer.Informer().GetIndexer(), crbInformer.Informer().GetIndexer()),
 			crInformer.Informer()).
 		WithBareInformers(rbInformer.Informer(), crbInformer.Informer()).
 		WithSync(controller.sync).
@@ -123,7 +133,7 @@ func newControllerInner(controller *CacheController,
 		ToController(cacheControllerName, recorder)
 }
 
-func roleEnqueueFu(rbIndexer cache.Indexer, executorCaches *store.ExecutorCaches) func(runtime.Object) []string {
+func (c *CacheController) roleEnqueueFu(rbIndexer cache.Indexer) func(runtime.Object) []string {
 	return func(obj runtime.Object) []string {
 		accessor, _ := meta.Accessor(obj)
 		ret := make([]string, 0)
@@ -135,7 +145,7 @@ func roleEnqueueFu(rbIndexer cache.Indexer, executorCaches *store.ExecutorCaches
 		} else {
 			for _, item := range items {
 				if rb, ok := item.(*rbacapiv1.RoleBinding); ok {
-					executors := getInterestedExecutors(rb.Subjects, executorCaches)
+					executors := getInterestedExecutors(rb.Subjects, c.executorCaches)
 					ret = append(ret, executors...)
 				}
 			}
@@ -145,8 +155,8 @@ func roleEnqueueFu(rbIndexer cache.Indexer, executorCaches *store.ExecutorCaches
 	}
 }
 
-func clusterRoleEnqueueFu(rbIndexer cache.Indexer, crbIndexer cache.Indexer,
-	executorCaches *store.ExecutorCaches) func(runtime.Object) []string {
+func (c *CacheController) clusterRoleEnqueueFu(
+	rbIndexer cache.Indexer, crbIndexer cache.Indexer) func(runtime.Object) []string {
 	return func(obj runtime.Object) []string {
 		accessor, _ := meta.Accessor(obj)
 		ret := make([]string, 0)
@@ -159,7 +169,7 @@ func clusterRoleEnqueueFu(rbIndexer cache.Indexer, crbIndexer cache.Indexer,
 		} else {
 			for _, item := range items {
 				if rb, ok := item.(*rbacapiv1.RoleBinding); ok {
-					executors := getInterestedExecutors(rb.Subjects, executorCaches)
+					executors := getInterestedExecutors(rb.Subjects, c.executorCaches)
 					ret = append(ret, executors...)
 				}
 			}
@@ -172,7 +182,7 @@ func clusterRoleEnqueueFu(rbIndexer cache.Indexer, crbIndexer cache.Indexer,
 		} else {
 			for _, item := range items {
 				if crb, ok := item.(*rbacapiv1.ClusterRoleBinding); ok {
-					executors := getInterestedExecutors(crb.Subjects, executorCaches)
+					executors := getInterestedExecutors(crb.Subjects, c.executorCaches)
 					ret = append(ret, executors...)
 				}
 			}
@@ -279,6 +289,9 @@ func (c *CacheController) iterateCacheItemsFn(ctx context.Context,
 }
 
 func (c *CacheController) cleanupUnnecessaryCache() {
+	// first, need to load all valuable caches in the current state cluster into an executor cache data
+	// structure, so we know which caches should be retained, then compare them with existing caches
+	// and clear unneeded cache items
 	retainableCache := store.NewExecutorCache()
 	c.manifestWorkExecutorCachesLoader.loadAllValuableCaches(retainableCache)
 	c.executorCaches.CleanupUnnecessaryCaches(retainableCache)

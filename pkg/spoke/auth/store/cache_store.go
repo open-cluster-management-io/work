@@ -47,7 +47,7 @@ func NewExecutorCache() *ExecutorCaches {
 }
 
 // ExecutorCaches is a two-level map cache structure, the 1-level map's key is the executor(service account)
-// in format of {namespace}/{name}, and the 2-level map's key is the hash value of the dimension(cached
+// in the format of {namespace}/{name}, and the 2-level map's key is the hash value of the dimension(cached
 // subject access review result of a specific resource, group-version-resource-namespace-name-action)
 type ExecutorCaches struct {
 	lock sync.RWMutex
@@ -90,7 +90,7 @@ func (c *ExecutorCaches) Upsert(executor string, dimension Dimension, allowed *b
 
 // Get gets a cache item value and existence by the dimension
 // if the cacheExistence is false that indicates the executor/dimension cache item does not exist in the caches
-// if the cacheExistence is true but the allowed is nil that means the caches do not if it is allowed
+// if the cacheExistence is true but the allowed is nil that means the caches do not know if it is allowed
 func (c *ExecutorCaches) Get(executor string, dimension Dimension) (allowed *bool, cacheExistence bool) {
 	oldDimensionCaches, ok := c.getDimensionCaches(executor)
 	if !ok {

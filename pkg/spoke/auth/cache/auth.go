@@ -14,6 +14,7 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/pointer"
 	worklister "open-cluster-management.io/api/client/work/listers/work/v1"
 	workapiv1 "open-cluster-management.io/api/work/v1"
 
@@ -27,8 +28,11 @@ type SubjectAccessReviewCheckFn func(ctx context.Context, executor *workapiv1.Ma
 	gvr schema.GroupVersionResource, namespace, name string, ownedByTheWork bool) error
 
 type sarCacheValidator struct {
-	kubeClient                       kubernetes.Interface
-	executorCaches                   *store.ExecutorCaches
+	kubeClient kubernetes.Interface
+	// executorCaches caches the subject access review results of a specific resource for executors
+	executorCaches *store.ExecutorCaches
+	// manifestWorkExecutorCachesLoader can load all valuable caches in the current state cluster into an
+	// executor cache data structure
 	manifestWorkExecutorCachesLoader manifestWorkExecutorCachesLoader
 	validator                        *basic.SarValidator
 	spokeInformer                    informers.SharedInformerFactory
@@ -87,7 +91,6 @@ func (v *sarCacheValidator) Start(ctx context.Context) {
 	v.manifestWorkExecutorCachesLoader.loadAllValuableCaches(v.executorCaches)
 
 	v.spokeInformer.Start(ctx.Done())
-	v.spokeInformer.WaitForCacheSync(ctx.Done())
 	v.cacheController.Run(ctx, 1)
 }
 
@@ -116,8 +119,8 @@ func (v *sarCacheValidator) Validate(ctx context.Context, executor *workapiv1.Ma
 		ExecuteAction: store.GetExecuteAction(ownedByTheWork),
 	}
 
-	allowed, ok := v.executorCaches.Get(executorKey, dimension)
-	if !ok || allowed == nil {
+	allowed, _ := v.executorCaches.Get(executorKey, dimension)
+	if allowed == nil {
 		err := v.validator.CheckSubjectAccessReviews(ctx, sa, gvr, namespace, name, ownedByTheWork)
 		updateSARCheckResultToCache(v.executorCaches, executorKey, dimension, err)
 		if err != nil {
@@ -140,13 +143,12 @@ func (v *sarCacheValidator) Validate(ctx context.Context, executor *workapiv1.Ma
 // updateSARCheckResultToCache updates the subjectAccessReview checking result to the executor cache
 func updateSARCheckResultToCache(executorCaches *store.ExecutorCaches, executorKey string,
 	dimension store.Dimension, result error) {
-	t, f := true, false
 	if result == nil {
-		executorCaches.Upsert(executorKey, dimension, &t)
+		executorCaches.Upsert(executorKey, dimension, pointer.Bool(true))
 	}
 
-	var authError = &basic.NotAllowedError{}
+	var authError *basic.NotAllowedError
 	if errors.As(result, &authError) {
-		executorCaches.Upsert(executorKey, dimension, &f)
+		executorCaches.Upsert(executorKey, dimension, pointer.Bool(false))
 	}
 }

@@ -48,7 +48,7 @@ func TestValidate(t *testing.T) {
 			},
 			expect: fmt.Errorf("the executor service account is nil"),
 		},
-		"forbideen": {
+		"forbidden": {
 			executor: &workapiv1.ManifestWorkExecutor{
 				Subject: workapiv1.ManifestWorkExecutorSubject{
 					Type: workapiv1.ExecutorSubjectTypeServiceAccount,
@@ -126,7 +126,7 @@ func TestValidateEscalation(t *testing.T) {
 		obj       *unstructured.Unstructured
 		expect    error
 	}{
-		"forbideen": {
+		"forbidden": {
 			executor: &workapiv1.ManifestWorkExecutor{
 				Subject: workapiv1.ManifestWorkExecutorSubject{
 					Type: workapiv1.ExecutorSubjectTypeServiceAccount,
