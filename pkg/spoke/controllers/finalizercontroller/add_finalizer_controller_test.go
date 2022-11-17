@@ -2,6 +2,7 @@ package finalizercontroller
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -28,7 +29,12 @@ func TestAddFinalizer(t *testing.T) {
 				if len(actions) != 1 {
 					t.Fatal(spew.Sdump(actions))
 				}
-				work := actions[0].(clienttesting.UpdateAction).GetObject().(*workapiv1.ManifestWork)
+				patch := actions[0].(clienttesting.PatchAction).GetPatch()
+				work := &workapiv1.ManifestWork{}
+				err := json.Unmarshal(patch, work)
+				if err != nil {
+					t.Fatal(err)
+				}
 				if !reflect.DeepEqual(work.Finalizers, []string{controllers.ManifestWorkFinalizer}) {
 					t.Fatal(spew.Sdump(actions))
 				}
@@ -41,7 +47,12 @@ func TestAddFinalizer(t *testing.T) {
 				if len(actions) != 1 {
 					t.Fatal(spew.Sdump(actions))
 				}
-				work := actions[0].(clienttesting.UpdateAction).GetObject().(*workapiv1.ManifestWork)
+				patch := actions[0].(clienttesting.PatchAction).GetPatch()
+				work := &workapiv1.ManifestWork{}
+				err := json.Unmarshal(patch, work)
+				if err != nil {
+					t.Fatal(err)
+				}
 				if !reflect.DeepEqual(work.Finalizers, []string{"other", controllers.ManifestWorkFinalizer}) {
 					t.Fatal(spew.Sdump(actions))
 				}

@@ -7,7 +7,6 @@ import (
 
 	"github.com/openshift/library-go/pkg/controller/factory"
 	"github.com/openshift/library-go/pkg/operator/events"
-	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -127,14 +126,12 @@ func (c *AvailableStatusController) syncManifestWork(ctx context.Context, origin
 	workAvailableStatusCondition := aggregateManifestConditions(manifestWork.Generation, manifestWork.Status.ResourceStatus.Manifests)
 	meta.SetStatusCondition(&manifestWork.Status.Conditions, workAvailableStatusCondition)
 
-	// no work if the status of manifestwork does not change
-	if equality.Semantic.DeepEqual(originalManifestWork.Status.ResourceStatus, manifestWork.Status.ResourceStatus) &&
-		equality.Semantic.DeepEqual(originalManifestWork.Status.Conditions, manifestWork.Status.Conditions) {
+	_, _, err := helper.UpdateManifestWorkStatus(ctx, c.manifestWorkClient, originalManifestWork, func(oldStatus *workapiv1.ManifestWorkStatus) error {
+		oldStatus.ResourceStatus = manifestWork.Status.ResourceStatus
+		oldStatus.Conditions = manifestWork.Status.Conditions
 		return nil
-	}
+	})
 
-	// update status of manifestwork. if this conflicts, try again later
-	_, err := c.manifestWorkClient.UpdateStatus(ctx, manifestWork, metav1.UpdateOptions{})
 	return err
 }
 
