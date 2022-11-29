@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/rand"
 	workapiv1 "open-cluster-management.io/api/work/v1"
 	"open-cluster-management.io/work/test/integration/util"
 )
@@ -624,6 +625,181 @@ var _ = ginkgo.Describe("Work agent", func() {
 				return nil
 			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
 
+		})
+	})
+
+	ginkgo.Context("Multiple owner references deletion", func() {
+		var nsName, cmName, workName string
+		ctx := context.Background()
+		ginkgo.BeforeEach(func() {
+			nsName = fmt.Sprintf("ns1-%s", rand.String(5))
+			cmName = "cm1"
+			workName = fmt.Sprintf("w1-%s", nameSuffix)
+			ns := &corev1.Namespace{}
+			ns.Name = nsName
+			_, err := spokeKubeClient.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+			objects := []runtime.Object{
+				newConfigmap(nsName, cmName, nil, nil),
+			}
+			work := newManifestWork(clusterName, workName, objects...)
+			_, err = hubWorkClient.WorkV1().ManifestWorks(clusterName).Create(
+				context.Background(), work, metav1.CreateOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+		})
+		ginkgo.AfterEach(func() {
+			err := spokeKubeClient.CoreV1().Namespaces().Delete(ctx, nsName, metav1.DeleteOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+		})
+		ginkgo.It("Should keep the resource when there are other appliedManifestWork owners", func() {
+			work2Name := fmt.Sprintf("w2-%s", nameSuffix)
+			objects := []runtime.Object{
+				newConfigmap(nsName, cmName, nil, nil),
+			}
+			work2 := newManifestWork(clusterName, work2Name, objects...)
+			_, err := hubWorkClient.WorkV1().ManifestWorks(clusterName).Create(ctx, work2, metav1.CreateOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+			for _, workName := range []string{workName, work2Name} {
+				// check status conditions in manifestwork status
+				gomega.Eventually(func() bool {
+					work, err := hubWorkClient.WorkV1().ManifestWorks(clusterName).Get(
+						ctx, workName, metav1.GetOptions{})
+					if err != nil {
+						return false
+					}
+
+					// check manifest status conditions
+					expectedManifestStatuses := []metav1.ConditionStatus{metav1.ConditionTrue}
+					if ok := haveManifestCondition(work.Status.ResourceStatus.Manifests,
+						string(workapiv1.ManifestApplied), expectedManifestStatuses); !ok {
+						return false
+					}
+					if ok := haveManifestCondition(work.Status.ResourceStatus.Manifests,
+						string(workapiv1.ManifestAvailable), expectedManifestStatuses); !ok {
+						return false
+					}
+
+					// check work status condition
+					return meta.IsStatusConditionTrue(work.Status.Conditions, workapiv1.WorkApplied) &&
+						meta.IsStatusConditionTrue(work.Status.Conditions, workapiv1.WorkAvailable)
+				}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+			}
+
+			cmCreationTime := metav1.Now()
+			// check if resources are applied for manifests
+			gomega.Eventually(func() bool {
+				cm, err := spokeKubeClient.CoreV1().ConfigMaps(nsName).Get(ctx, cmName, metav1.GetOptions{})
+				if err != nil {
+					return false
+				}
+
+				cmCreationTime = cm.CreationTimestamp
+				return len(cm.OwnerReferences) == 2
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("delete manifestwork mw1")
+			err = hubWorkClient.WorkV1().ManifestWorks(clusterName).Delete(ctx, workName, metav1.DeleteOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+			// wait for deletion of manifest work
+			gomega.Eventually(func() bool {
+				_, err := hubWorkClient.WorkV1().ManifestWorks(clusterName).Get(ctx, workName, metav1.GetOptions{})
+				return errors.IsNotFound(err)
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+
+			cm, err := spokeKubeClient.CoreV1().ConfigMaps(nsName).Get(ctx, cmName, metav1.GetOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			gomega.Expect(cm.CreationTimestamp.Equal(&cmCreationTime)).To(gomega.BeTrue())
+
+			ginkgo.By("delete manifestwork mw2")
+			err = hubWorkClient.WorkV1().ManifestWorks(clusterName).Delete(ctx, work2Name, metav1.DeleteOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+			// wait for deletion of manifest work
+			gomega.Eventually(func() bool {
+				_, err := hubWorkClient.WorkV1().ManifestWorks(clusterName).Get(ctx, work2Name, metav1.GetOptions{})
+				return errors.IsNotFound(err)
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+
+			_, err = spokeKubeClient.CoreV1().ConfigMaps(nsName).Get(ctx, cmName, metav1.GetOptions{})
+			gomega.Expect(errors.IsNotFound(err)).To(gomega.BeTrue())
+		})
+
+		ginkgo.It("Should delete the resource even if there are other non-appliedManifestWork owners", func() {
+			// check status conditions in manifestwork status
+			gomega.Eventually(func() bool {
+				work, err := hubWorkClient.WorkV1().ManifestWorks(clusterName).Get(
+					ctx, workName, metav1.GetOptions{})
+				if err != nil {
+					return false
+				}
+
+				// check manifest status conditions
+				expectedManifestStatuses := []metav1.ConditionStatus{metav1.ConditionTrue}
+				if ok := haveManifestCondition(work.Status.ResourceStatus.Manifests,
+					string(workapiv1.ManifestApplied), expectedManifestStatuses); !ok {
+					return false
+				}
+				if ok := haveManifestCondition(work.Status.ResourceStatus.Manifests,
+					string(workapiv1.ManifestAvailable), expectedManifestStatuses); !ok {
+					return false
+				}
+
+				// check work status condition
+				return meta.IsStatusConditionTrue(work.Status.Conditions, workapiv1.WorkApplied) &&
+					meta.IsStatusConditionTrue(work.Status.Conditions, workapiv1.WorkAvailable)
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("check if resources are applied for manifests")
+			_, err := spokeKubeClient.CoreV1().ConfigMaps(nsName).Get(ctx, cmName, metav1.GetOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+			ginkgo.By("Add a non-appliedManifestWork owner to the applied resource")
+			cmOwner, err := spokeKubeClient.CoreV1().ConfigMaps(nsName).Create(ctx,
+				newConfigmap(nsName, "owner", nil, nil), metav1.CreateOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+			gomega.Eventually(func() error {
+				cm, err := spokeKubeClient.CoreV1().ConfigMaps(nsName).Get(ctx, cmName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				cm.OwnerReferences = append(cm.OwnerReferences, metav1.OwnerReference{
+					Name:       cmOwner.Name,
+					UID:        cmOwner.UID,
+					Kind:       "ConfigMap",
+					APIVersion: "v1",
+				})
+
+				_, err = spokeKubeClient.CoreV1().ConfigMaps(nsName).Update(ctx, cm, metav1.UpdateOptions{})
+				return err
+			}, eventuallyTimeout, eventuallyInterval).ShouldNot(gomega.HaveOccurred())
+
+			cm, err := spokeKubeClient.CoreV1().ConfigMaps(nsName).Get(ctx, cmName, metav1.GetOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			gomega.Expect(len(cm.OwnerReferences) == 2).To(gomega.BeTrue())
+
+			ginkgo.By("delete manifestwork mw1")
+			err = hubWorkClient.WorkV1().ManifestWorks(clusterName).Delete(ctx, workName, metav1.DeleteOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+			ginkgo.By("wait for deletion of manifest work")
+			gomega.Eventually(func() bool {
+				_, err := hubWorkClient.WorkV1().ManifestWorks(clusterName).Get(ctx, workName, metav1.GetOptions{})
+				return errors.IsNotFound(err)
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+
+			ginkgo.By("check the resource cm was deleted successfully")
+			gomega.Eventually(func() bool {
+				_, err := spokeKubeClient.CoreV1().ConfigMaps(nsName).Get(ctx, cmName, metav1.GetOptions{})
+				return errors.IsNotFound(err)
+			}, eventuallyTimeout, eventuallyInterval).Should(gomega.BeTrue())
+
+			err = spokeKubeClient.CoreV1().ConfigMaps(nsName).Delete(ctx, cmOwner.Name, metav1.DeleteOptions{})
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
 		})
 	})
 })
