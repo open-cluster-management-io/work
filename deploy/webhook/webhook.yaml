@@ -22,6 +22,6 @@ webhooks:
     - "*"
     resources:
     - manifestworks
-  admissionReviewVersions: ["v1beta1","v1"]
+  admissionReviewVersions: ["v1alpha1","v1beta1","v1"]
   sideEffects: None
   timeoutSeconds: 3

@@ -27,7 +27,7 @@ namespace: open-cluster-management-hub
 namespace: open-cluster-management-hub
 
 resources:
-- ./manifestworks.crd.yaml
+- ./placemanifestworks.crd.yaml
 - ./component_namespace.yaml
 - ./clusterrole_binding.yaml
 - ./clusterrole.yaml
