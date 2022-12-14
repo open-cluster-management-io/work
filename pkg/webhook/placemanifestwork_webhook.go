@@ -1,13 +1,13 @@
 package webhook
 
 import (
-	"context"
+	//"context"
 	"encoding/json"
-	"fmt"
+	//"fmt"
 	"net/http"
-	"reflect"
+	//"reflect"
 
-	ocmfeature "open-cluster-management.io/api/feature"
+	//ocmfeature "open-cluster-management.io/api/feature"
 	workv1alpha1 "open-cluster-management.io/api/work/v1alpha1"
 
 	admissionv1beta1 "k8s.io/api/admission/v1beta1"
@@ -17,7 +17,7 @@ import (
 	//"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	//utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
@@ -74,7 +74,7 @@ func (a *PlaceManifestWorkAdmissionHook) Initialize(kubeClientConfig *rest.Confi
 func (a *PlaceManifestWorkAdmissionHook) validateRequest(request *admissionv1beta1.AdmissionRequest) *admissionv1beta1.AdmissionResponse {
 	status := &admissionv1beta1.AdmissionResponse{}
 
-	err := a.validateManifestWorkObj(request)
+	err := a.validatePlaceManifestWorkObj(request)
 	if err != nil {
 		status.Allowed = false
 		status.Result = &metav1.Status{
@@ -90,13 +90,9 @@ func (a *PlaceManifestWorkAdmissionHook) validateRequest(request *admissionv1bet
 
 func (a *PlaceManifestWorkAdmissionHook) validatePlaceManifestWorkObj(request *admissionv1beta1.AdmissionRequest) error {
 	placeWork := &workv1alpha1.PlaceManifestWork{}
-	if err := json.Unmarshal(request.Object.Raw, work); err != nil {
+	if err := json.Unmarshal(request.Object.Raw, placeWork); err != nil {
 		return err
 	}
 
-	if placeWork.Spec.ManifestWorkTemplate == nil {
-		return fmt.Errorf("ManifestWorkTemplate should not be empty")
-	}
-
-	return nil
+	return placeWork
 }
