@@ -30,12 +30,6 @@ type JunitReportConfig struct {
 
 	//Enable OmitCapturedStdOutErr to prevent captured stdout/stderr appearing in system-out
 	OmitCapturedStdOutErr bool
-
-	// Enable OmitSpecLabels to prevent labels from appearing in the spec name
-	OmitSpecLabels bool
-
-	// Enable OmitLeafNodeType to prevent the spec leaf node type from appearing in the spec name
-	OmitLeafNodeType bool
 }
 
 type JUnitTestSuites struct {
@@ -178,17 +172,13 @@ func GenerateJUnitReportWithConfig(report types.Report, dst string, config Junit
 	}
 	for _, spec := range report.SpecReports {
 		name := fmt.Sprintf("[%s]", spec.LeafNodeType)
-		if config.OmitLeafNodeType {
-			name = ""
-		}
 		if spec.FullText() != "" {
 			name = name + " " + spec.FullText()
 		}
 		labels := spec.Labels()
-		if len(labels) > 0 && !config.OmitSpecLabels {
+		if len(labels) > 0 {
 			name = name + " [" + strings.Join(labels, ", ") + "]"
 		}
-		name = strings.TrimSpace(name)
 
 		test := JUnitTestCase{
 			Name:      name,

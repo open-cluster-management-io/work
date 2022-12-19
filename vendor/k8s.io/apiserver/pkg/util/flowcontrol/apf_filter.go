@@ -32,8 +32,8 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
 
-	flowcontrol "k8s.io/api/flowcontrol/v1beta3"
-	flowcontrolclient "k8s.io/client-go/kubernetes/typed/flowcontrol/v1beta3"
+	flowcontrol "k8s.io/api/flowcontrol/v1beta2"
+	flowcontrolclient "k8s.io/client-go/kubernetes/typed/flowcontrol/v1beta2"
 )
 
 // ConfigConsumerAsFieldManager is how the config consuminng
@@ -66,6 +66,9 @@ type Interface interface {
 		execFn func(),
 	)
 
+	// MaintainObservations is a helper for maintaining statistics.
+	MaintainObservations(stopCh <-chan struct{})
+
 	// Run monitors config objects from the main apiservers and causes
 	// any needed changes to local behavior.  This method ceases
 	// activity and returns after the given channel is closed.
@@ -83,7 +86,7 @@ type Interface interface {
 // New creates a new instance to implement API priority and fairness
 func New(
 	informerFactory kubeinformers.SharedInformerFactory,
-	flowcontrolClient flowcontrolclient.FlowcontrolV1beta3Interface,
+	flowcontrolClient flowcontrolclient.FlowcontrolV1beta2Interface,
 	serverConcurrencyLimit int,
 	requestWaitLimit time.Duration,
 ) Interface {
@@ -97,8 +100,8 @@ func New(
 		FlowcontrolClient:      flowcontrolClient,
 		ServerConcurrencyLimit: serverConcurrencyLimit,
 		RequestWaitLimit:       requestWaitLimit,
-		ReqsGaugeVec:           metrics.PriorityLevelConcurrencyGaugeVec,
-		ExecSeatsGaugeVec:      metrics.PriorityLevelExecutionSeatsGaugeVec,
+		ReqsObsPairGenerator:   metrics.PriorityLevelConcurrencyObserverPairGenerator,
+		ExecSeatsObsGenerator:  metrics.PriorityLevelExecutionSeatsObserverGenerator,
 		QueueSetFactory:        fqs.NewQueueSetFactory(clk),
 	})
 }
@@ -129,7 +132,7 @@ type TestableConfig struct {
 	InformerFactory kubeinformers.SharedInformerFactory
 
 	// FlowcontrolClient to use for manipulating config objects
-	FlowcontrolClient flowcontrolclient.FlowcontrolV1beta3Interface
+	FlowcontrolClient flowcontrolclient.FlowcontrolV1beta2Interface
 
 	// ServerConcurrencyLimit for the controller to enforce
 	ServerConcurrencyLimit int
@@ -137,11 +140,11 @@ type TestableConfig struct {
 	// RequestWaitLimit configured on the server
 	RequestWaitLimit time.Duration
 
-	// GaugeVec for metrics about requests, broken down by phase and priority_level
-	ReqsGaugeVec metrics.RatioedGaugeVec
+	// ObsPairGenerator for metrics about requests
+	ReqsObsPairGenerator metrics.RatioedChangeObserverPairGenerator
 
-	// RatioedGaugePairVec for metrics about seats occupied by all phases of execution
-	ExecSeatsGaugeVec metrics.RatioedGaugeVec
+	// RatioedChangeObserverPairGenerator for metrics about seats occupied by all phases of execution
+	ExecSeatsObsGenerator metrics.RatioedChangeObserverGenerator
 
 	// QueueSetFactory for the queuing implementation
 	QueueSetFactory fq.QueueSetFactory

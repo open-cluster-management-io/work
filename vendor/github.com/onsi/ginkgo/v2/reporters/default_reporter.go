@@ -223,7 +223,7 @@ func (r *DefaultReporter) DidRun(report types.SpecReport) {
 	showSeparateStdSection := inParallel && (report.CapturedStdOutErr != "")
 
 	// given all that - do we have any actual content to show? or are we a single denoter in a stream?
-	reportHasContent := v.Is(types.VerbosityLevelVeryVerbose) || showTimeline || showSeparateVisibilityAlwaysReportsSection || showSeparateStdSection || report.Failed() || (v.Is(types.VerbosityLevelVerbose) && !report.State.Is(types.SpecStateSkipped))
+	reportHasContent := v.GTE(types.VerbosityLevelVerbose) || showTimeline || showSeparateVisibilityAlwaysReportsSection || showSeparateStdSection || report.Failed()
 
 	// should we show a runtime?
 	includeRuntime := !report.State.Is(types.SpecStateSkipped|types.SpecStatePending) || (report.State.Is(types.SpecStateSkipped) && report.Failure.Message != "")
@@ -249,8 +249,8 @@ func (r *DefaultReporter) DidRun(report types.SpecReport) {
 		}
 	case types.SpecStateSkipped:
 		header = "S"
-		if v.Is(types.VerbosityLevelVeryVerbose) || (v.Is(types.VerbosityLevelVerbose) && report.Failure.Message != "") {
-			header, reportHasContent = "S [SKIPPED]", true
+		if v.GTE(types.VerbosityLevelVerbose) {
+			header = "S [SKIPPED]"
 		}
 	default:
 		header = fmt.Sprintf("%s [%s]", header, r.humanReadableState(report.State))

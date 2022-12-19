@@ -28,10 +28,10 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
+	clusterv1beta1client "open-cluster-management.io/api/client/cluster/clientset/versioned/typed/cluster/v1beta1"
 	workv1client "open-cluster-management.io/api/client/work/clientset/versioned/typed/work/v1"
 	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	workapiv1 "open-cluster-management.io/api/work/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -530,14 +530,15 @@ func BuildResourceMeta(
 }
 
 type PlacementDecisionGetter struct {
-	Client client.Client
+	Client clusterv1beta1client.ClusterV1beta1Client
 }
 
 func (pdl PlacementDecisionGetter) List(selector labels.Selector, namespace string) ([]*clusterv1beta1.PlacementDecision, error) {
-	decisionList := clusterv1beta1.PlacementDecisionList{}
-	err := pdl.Client.List(context.Background(), &decisionList, &client.ListOptions{
-		Namespace:     namespace,
-		LabelSelector: selector})
+	opts := metav1.ListOptions{
+		LabelSelector: selector.String(),
+	}
+
+	decisionList, err := pdl.Client.PlacementDecisions(namespace).List(context.Background(), opts)
 	if err != nil {
 		return nil, err
 	}
@@ -548,18 +549,12 @@ func (pdl PlacementDecisionGetter) List(selector labels.Selector, namespace stri
 	return decisions, nil
 }
 
-func GetPlacement(kubeclient client.Client, name string, ns string) (*clusterv1beta1.Placement, error) {
-	placement := &clusterv1beta1.Placement{}
-	err := kubeclient.Get(context.TODO(), client.ObjectKey{
-		Name:      name,
-		Namespace: ns,
-	}, placement)
-
-	return placement, err
+func GetPlacement(client clusterv1beta1client.ClusterV1beta1Client, ctx context.Context, opts metav1.GetOptions, name string, ns string) (*clusterv1beta1.Placement, error) {
+	return client.Placements(ns).Get(ctx, name, opts)
 }
 
-func GetClusters(kubeclient client.Client, placement *clusterv1beta1.Placement, existingClusters sets.String) (sets.String, sets.String, error) {
-	pdtracker := clusterv1beta1.NewPlacementDecisionClustersTracker(placement, PlacementDecisionGetter{Client: kubeclient}, existingClusters)
+func GetClusters(client clusterv1beta1client.ClusterV1beta1Client, placement *clusterv1beta1.Placement, existingClusters sets.String) (sets.String, sets.String, error) {
+	pdtracker := clusterv1beta1.NewPlacementDecisionClustersTracker(placement, PlacementDecisionGetter{Client: client}, existingClusters)
 
 	return pdtracker.Get()
 }
