@@ -11,39 +11,39 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-var _ webhook.CustomValidator = &PlaceManifestWorkWebhook{}
+var _ webhook.CustomValidator = &ManifestWorkReplicaSetWebhook{}
 
 // ValidateCreate implements webhook.Validator so a webhook will be registered for the type
-func (r *PlaceManifestWorkWebhook) ValidateCreate(ctx context.Context, obj runtime.Object) error {
-	placeWork, ok := obj.(*workv1alpha1.PlaceManifestWork)
+func (r *ManifestWorkReplicaSetWebhook) ValidateCreate(ctx context.Context, obj runtime.Object) error {
+	mwrSet, ok := obj.(*workv1alpha1.ManifestWorkReplicaSet)
 	if !ok {
-		return apierrors.NewBadRequest("Request placeManifestwork obj format is not right")
+		return apierrors.NewBadRequest("Request manifestWorkReplicaSet obj format is not right")
 	}
-	return r.validateRequest(placeWork, nil, ctx)
+	return r.validateRequest(mwrSet, nil, ctx)
 }
 
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
-func (r *PlaceManifestWorkWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) error {
-	newPlaceWork, ok := newObj.(*workv1alpha1.PlaceManifestWork)
+func (r *ManifestWorkReplicaSetWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) error {
+	newmwrSet, ok := newObj.(*workv1alpha1.ManifestWorkReplicaSet)
 	if !ok {
-		return apierrors.NewBadRequest("Request placeManifestwork obj format is not right")
+		return apierrors.NewBadRequest("Request manifestWorkReplicaSet obj format is not right")
 	}
 
-	oldPlaceWork, ok := oldObj.(*workv1alpha1.PlaceManifestWork)
+	oldmwrSet, ok := oldObj.(*workv1alpha1.ManifestWorkReplicaSet)
 	if !ok {
-		return apierrors.NewBadRequest("Request placeManifestwork obj format is not right")
+		return apierrors.NewBadRequest("Request manifestWorkReplicaSet obj format is not right")
 	}
 
-	return r.validateRequest(newPlaceWork, oldPlaceWork, ctx)
+	return r.validateRequest(newmwrSet, oldmwrSet, ctx)
 }
 
 // ValidateDelete implements webhook.Validator so a webhook will be registered for the type
-func (r *PlaceManifestWorkWebhook) ValidateDelete(_ context.Context, obj runtime.Object) error {
+func (r *ManifestWorkReplicaSetWebhook) ValidateDelete(_ context.Context, obj runtime.Object) error {
 	return nil
 }
 
-func (r *PlaceManifestWorkWebhook) validateRequest(newPlaceWork *workv1alpha1.PlaceManifestWork, oldPlaceWork *workv1alpha1.PlaceManifestWork, ctx context.Context) error {
-	if err := validatePlaceManifests(newPlaceWork); err != nil {
+func (r *ManifestWorkReplicaSetWebhook) validateRequest(newmwrSet *workv1alpha1.ManifestWorkReplicaSet, oldmwrSet *workv1alpha1.ManifestWorkReplicaSet, ctx context.Context) error {
+	if err := validatePlaceManifests(newmwrSet); err != nil {
 		return apierrors.NewBadRequest(err.Error())
 	}
 
@@ -55,6 +55,6 @@ func (r *PlaceManifestWorkWebhook) validateRequest(newPlaceWork *workv1alpha1.Pl
 	return nil
 }
 
-func validatePlaceManifests(placeWork *workv1alpha1.PlaceManifestWork) error {
-	return common.ManifestValidator.ValidateManifests(placeWork.Spec.ManifestWorkTemplate.Workload.Manifests)
+func validatePlaceManifests(mwrSet *workv1alpha1.ManifestWorkReplicaSet) error {
+	return common.ManifestValidator.ValidateManifests(mwrSet.Spec.ManifestWorkTemplate.Workload.Manifests)
 }

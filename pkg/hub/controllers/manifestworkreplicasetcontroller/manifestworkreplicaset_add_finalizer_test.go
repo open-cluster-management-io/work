@@ -1,4 +1,4 @@
-package placemanifestworkcontroller
+package manifestworkreplicasetcontroller
 
 import (
 	"context"
@@ -11,49 +11,49 @@ import (
 
 // Test add finalizer reconcile
 func TestAddFinalizerReconcile(t *testing.T) {
-	pmwTest := helpertest.CreateTestPlaceManifestWork("pmw-test", "default", "place-test")
-	fakeClient := fakeclient.NewSimpleClientset(pmwTest)
+	mwrSetTest := helpertest.CreateTestManifestWorkReplicaSet("mwrset-test", "default", "place-test")
+	fakeClient := fakeclient.NewSimpleClientset(mwrSetTest)
 
 	addFinalizerController := &addFinalizerReconciler{
 		workClient: fakeClient,
 	}
 
-	pmwTest, _, err := addFinalizerController.reconcile(context.TODO(), pmwTest)
+	mwrSetTest, _, err := addFinalizerController.reconcile(context.TODO(), mwrSetTest)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if !slices.Contains(pmwTest.Finalizers, PlaceManifestWorkFinalizer) {
+	if !slices.Contains(mwrSetTest.Finalizers, ManifestWorkReplicaSetFinalizer) {
 		t.Fatal("Finalizer did not added")
 	}
 
-	// Set placeManifestWork delete time AND remove finalizer
+	// Set ManifestWorkReplicaSet delete time AND remove finalizer
 	timeNow := metav1.Now()
-	pmwTest.DeletionTimestamp = &timeNow
-	pmwTest.Finalizers = []string{}
+	mwrSetTest.DeletionTimestamp = &timeNow
+	mwrSetTest.Finalizers = []string{}
 
 	// Run reconcile
-	pmwTest, _, err = addFinalizerController.reconcile(context.TODO(), pmwTest)
+	mwrSetTest, _, err = addFinalizerController.reconcile(context.TODO(), mwrSetTest)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Check finalizer not exist
-	if slices.Contains(pmwTest.Finalizers, PlaceManifestWorkFinalizer) {
-		t.Fatal("Finalizer added to deleted placemanifestWork")
+	if slices.Contains(mwrSetTest.Finalizers, ManifestWorkReplicaSetFinalizer) {
+		t.Fatal("Finalizer added to deleted ManifestWorkReplicaSet")
 	}
 }
 
 func TestAddFinalizerTwiceReconcile(t *testing.T) {
-	pmwTest := helpertest.CreateTestPlaceManifestWork("pmw-test", "default", "place-test")
-	pmwTest.Finalizers = []string{PlaceManifestWorkFinalizer}
-	fakeClient := fakeclient.NewSimpleClientset(pmwTest)
+	mwrSetTest := helpertest.CreateTestManifestWorkReplicaSet("mwrset-test", "default", "place-test")
+	mwrSetTest.Finalizers = []string{ManifestWorkReplicaSetFinalizer}
+	fakeClient := fakeclient.NewSimpleClientset(mwrSetTest)
 
 	addFinalizerController := &addFinalizerReconciler{
 		workClient: fakeClient,
 	}
 
-	pmwTest, _, err := addFinalizerController.reconcile(context.TODO(), pmwTest)
+	mwrSetTest, _, err := addFinalizerController.reconcile(context.TODO(), mwrSetTest)
 	if err != nil {
 		t.Fatal(err)
 	}

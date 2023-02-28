@@ -1,4 +1,4 @@
-package placemanifestworkcontroller
+package manifestworkreplicasetcontroller
 
 import (
 	"fmt"
@@ -12,17 +12,17 @@ import (
 )
 
 const (
-	placeManifestWorkByPlacement = "placeManifestWorkByPlacement"
+	manifestWorkReplicaSetByPlacement = "manifestWorkReplicaSetByPlacement"
 )
 
-func (m *PlaceManifestWorkController) placementQueueKeysFunc(obj runtime.Object) []string {
+func (m *ManifestWorkReplicaSetController) placementQueueKeysFunc(obj runtime.Object) []string {
 	key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
 	if err != nil {
 		utilruntime.HandleError(err)
 		return []string{}
 	}
 
-	objs, err := m.placeManifestWorkIndexer.ByIndex(placeManifestWorkByPlacement, key)
+	objs, err := m.manifestWorkReplicaSetIndexer.ByIndex(manifestWorkReplicaSetByPlacement, key)
 	if err != nil {
 		utilruntime.HandleError(err)
 		return []string{}
@@ -30,22 +30,22 @@ func (m *PlaceManifestWorkController) placementQueueKeysFunc(obj runtime.Object)
 
 	var keys []string
 	for _, o := range objs {
-		placeManifestWork := o.(*workapiv1alpha1.PlaceManifestWork)
-		klog.V(4).Infof("enqueue placeManifestWork %s/%s, because of placement %s", placeManifestWork.Namespace, placeManifestWork.Name, key)
-		keys = append(keys, fmt.Sprintf("%s/%s", placeManifestWork.Namespace, placeManifestWork.Name))
+		manifestWorkReplicaSet := o.(*workapiv1alpha1.ManifestWorkReplicaSet)
+		klog.V(4).Infof("enqueue manifestWorkReplicaSet %s/%s, because of placement %s", manifestWorkReplicaSet.Namespace, manifestWorkReplicaSet.Name, key)
+		keys = append(keys, fmt.Sprintf("%s/%s", manifestWorkReplicaSet.Namespace, manifestWorkReplicaSet.Name))
 	}
 
 	return keys
 }
 
-func (m *PlaceManifestWorkController) placementDecisionQueueKeysFunc(obj runtime.Object) []string {
+func (m *ManifestWorkReplicaSetController) placementDecisionQueueKeysFunc(obj runtime.Object) []string {
 	accessor, _ := meta.Accessor(obj)
 	placementName, ok := accessor.GetLabels()[clusterv1beta1.PlacementLabel]
 	if !ok {
 		return []string{}
 	}
 
-	objs, err := m.placeManifestWorkIndexer.ByIndex(placeManifestWorkByPlacement, fmt.Sprintf("%s/%s", accessor.GetNamespace(), placementName))
+	objs, err := m.manifestWorkReplicaSetIndexer.ByIndex(manifestWorkReplicaSetByPlacement, fmt.Sprintf("%s/%s", accessor.GetNamespace(), placementName))
 	if err != nil {
 		utilruntime.HandleError(err)
 		return []string{}
@@ -53,32 +53,37 @@ func (m *PlaceManifestWorkController) placementDecisionQueueKeysFunc(obj runtime
 
 	var keys []string
 	for _, o := range objs {
-		placeManifestWork := o.(*workapiv1alpha1.PlaceManifestWork)
-		klog.V(4).Infof("enqueue placeManifestWork %s/%s, because of placementDecision %s/%s",
-			placeManifestWork.Namespace, placeManifestWork.Name, accessor.GetNamespace(), accessor.GetName())
-		keys = append(keys, fmt.Sprintf("%s/%s", placeManifestWork.Namespace, placeManifestWork.Name))
+		manifestWorkReplicaSet := o.(*workapiv1alpha1.ManifestWorkReplicaSet)
+		klog.V(4).Infof("enqueue manifestWorkReplicaSet %s/%s, because of placementDecision %s/%s",
+			manifestWorkReplicaSet.Namespace, manifestWorkReplicaSet.Name, accessor.GetNamespace(), accessor.GetName())
+		keys = append(keys, fmt.Sprintf("%s/%s", manifestWorkReplicaSet.Namespace, manifestWorkReplicaSet.Name))
 	}
 
 	return keys
 }
 
 // we will generate manifestwork with a lab
-func (m *PlaceManifestWorkController) manifestWorkQueueKeyFunc(obj runtime.Object) string {
+func (m *ManifestWorkReplicaSetController) manifestWorkQueueKeyFunc(obj runtime.Object) string {
 	accessor, _ := meta.Accessor(obj)
-	key, ok := accessor.GetLabels()[PlaceManifestWorkControllerNameLabelKey]
+	key, ok := accessor.GetLabels()[ManifestWorkReplicaSetControllerNameLabelKey]
 	if !ok {
 		return ""
 	}
 	return key
 }
 
-func indexPlacementManifestWorkByPlacement(obj interface{}) ([]string, error) {
-	placeManifestWork, ok := obj.(*workapiv1alpha1.PlaceManifestWork)
+func indexManifestWorkReplicaSetByPlacement(obj interface{}) ([]string, error) {
+	manifestWorkReplicaSet, ok := obj.(*workapiv1alpha1.ManifestWorkReplicaSet)
 
 	if !ok {
-		return []string{}, fmt.Errorf("obj %T is not a PlaceManifestWork", obj)
+		return []string{}, fmt.Errorf("obj %T is not a ManifestWorkReplicaSet", obj)
 	}
 
-	key := fmt.Sprintf("%s/%s", placeManifestWork.Namespace, placeManifestWork.Spec.PlacementRef.Name)
-	return []string{key}, nil
+	var keys []string
+	for _, placementRef := range manifestWorkReplicaSet.Spec.PlacementRefs {
+		key := fmt.Sprintf("%s/%s", manifestWorkReplicaSet.Namespace, placementRef.Name)
+		keys = append(keys, key)
+	}
+
+	return keys, nil
 }

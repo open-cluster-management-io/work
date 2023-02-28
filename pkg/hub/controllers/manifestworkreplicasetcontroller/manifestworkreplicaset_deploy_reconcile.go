@@ -1,4 +1,4 @@
-package placemanifestworkcontroller
+package manifestworkreplicasetcontroller
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	clusterlister "open-cluster-management.io/api/client/cluster/listers/cluster/v1beta1"
 	worklisterv1 "open-cluster-management.io/api/client/work/listers/work/v1"
+	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	"open-cluster-management.io/api/utils/work/v1/workapplier"
 	workv1 "open-cluster-management.io/api/work/v1"
 	workapiv1alpha1 "open-cluster-management.io/api/work/v1alpha1"
@@ -26,43 +27,52 @@ type deployReconciler struct {
 	placementLister     clusterlister.PlacementLister
 }
 
-func (d *deployReconciler) reconcile(ctx context.Context, pw *workapiv1alpha1.PlaceManifestWork) (*workapiv1alpha1.PlaceManifestWork, reconcileState, error) {
+func (d *deployReconciler) reconcile(ctx context.Context, mwrSet *workapiv1alpha1.ManifestWorkReplicaSet) (*workapiv1alpha1.ManifestWorkReplicaSet, reconcileState, error) {
 	// Manifestwork create/update/delete logic.
-	placement, err := d.placementLister.Placements(pw.Namespace).Get(pw.Spec.PlacementRef.Name)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			apimeta.SetStatusCondition(&pw.Status.Conditions, GetPlacementDecisionVerified(workapiv1alpha1.PlacementDecisionNotFound, ""))
+	var placements []*clusterv1beta1.Placement
+	for _, placementRef := range mwrSet.Spec.PlacementRefs {
+		placement, err := d.placementLister.Placements(mwrSet.Namespace).Get(placementRef.Name)
+		if err != nil {
+			if errors.IsNotFound(err) {
+				apimeta.SetStatusCondition(&mwrSet.Status.Conditions, GetPlacementDecisionVerified(workapiv1alpha1.ReasonPlacementDecisionNotFound, ""))
+			}
+			return mwrSet, reconcileContinue, fmt.Errorf("Failed get placement %w", err)
 		}
-		return pw, reconcileContinue, fmt.Errorf("Failed get placement %w", err)
+		placements = append(placements, placement)
 	}
 
-	req, err := labels.NewRequirement(PlaceManifestWorkControllerNameLabelKey, selection.In, []string{pw.Name})
+	req, err := labels.NewRequirement(ManifestWorkReplicaSetControllerNameLabelKey, selection.In, []string{mwrSet.Name})
 	if err != nil {
-		return pw, reconcileContinue, err
+		return mwrSet, reconcileContinue, err
 	}
 
 	selector := labels.NewSelector().Add(*req)
 	manifestWorks, err := d.manifestWorkLister.List(selector)
 	if err != nil {
-		return pw, reconcileContinue, err
+		return mwrSet, reconcileContinue, err
 	}
 
 	errs := []error{}
-	existingClusters := sets.NewString()
+	addedClusters, deletedClusters, existingClusters := sets.NewString(), sets.NewString(), sets.NewString()
 	for _, mw := range manifestWorks {
 		existingClusters.Insert(mw.Namespace)
 	}
 
-	addedClusters, deletedClusters, err := helper.GetClusters(d.placeDecisionLister, placement, existingClusters)
-	if err != nil {
-		apimeta.SetStatusCondition(&pw.Status.Conditions, GetPlacementDecisionVerified(workapiv1alpha1.NotAsExpected, ""))
+	for _, placement := range placements {
+		added, deleted, err := helper.GetClusters(d.placeDecisionLister, placement, existingClusters)
+		if err != nil {
+			apimeta.SetStatusCondition(&mwrSet.Status.Conditions, GetPlacementDecisionVerified(workapiv1alpha1.ReasonNotAsExpected, ""))
 
-		return pw, reconcileContinue, utilerrors.NewAggregate(errs)
+			return mwrSet, reconcileContinue, utilerrors.NewAggregate(errs)
+		}
+
+		addedClusters = addedClusters.Union(added)
+		deletedClusters = deletedClusters.Union(deleted)
 	}
 
 	// Create manifestWork for added clusters
 	for cls := range addedClusters {
-		mw, err := CreateManifestWork(pw, cls)
+		mw, err := CreateManifestWork(mwrSet, cls)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -74,18 +84,18 @@ func (d *deployReconciler) reconcile(ctx context.Context, pw *workapiv1alpha1.Pl
 		}
 	}
 
-	// Update manifestWorks in case there are changes at ManifestWork or PlaceManifestWork
+	// Update manifestWorks in case there are changes at ManifestWork or ManifestWorkReplicaSet
 	for cls := range existingClusters {
 		// Delete manifestWork for deleted clusters
 		if deletedClusters.Has(cls) {
-			err = d.workApplier.Delete(ctx, cls, pw.Name)
+			err = d.workApplier.Delete(ctx, cls, mwrSet.Name)
 			if err != nil {
 				errs = append(errs, err)
 			}
 			continue
 		}
 
-		mw, err := CreateManifestWork(pw, cls)
+		mw, err := CreateManifestWork(mwrSet, cls)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -97,46 +107,46 @@ func (d *deployReconciler) reconcile(ctx context.Context, pw *workapiv1alpha1.Pl
 		}
 	}
 
-	// Set the PlacedManifestWorkSummary
-	if pw.Status.PlacedManifestWorkSummary == (workapiv1alpha1.PlacedManifestWorkSummary{}) {
-		pw.Status.PlacedManifestWorkSummary = workapiv1alpha1.PlacedManifestWorkSummary{}
+	// Set the Summary
+	if mwrSet.Status.Summary == (workapiv1alpha1.ManifestWorkReplicaSetSummary{}) {
+		mwrSet.Status.Summary = workapiv1alpha1.ManifestWorkReplicaSetSummary{}
 	}
 	total := len(existingClusters) - len(deletedClusters) + len(addedClusters)
 	if total < 0 {
 		total = 0
 	}
 
-	pw.Status.PlacedManifestWorkSummary.Total = total
+	mwrSet.Status.Summary.Total = total
 	if total == 0 {
-		pw.Status.PlacedManifestWorkSummary.Applied = 0
-		pw.Status.PlacedManifestWorkSummary.Available = 0
-		pw.Status.PlacedManifestWorkSummary.Degraded = 0
-		pw.Status.PlacedManifestWorkSummary.Progressing = 0
-		apimeta.SetStatusCondition(&pw.Status.Conditions, GetPlacementDecisionVerified(workapiv1alpha1.PlacementDecisionEmpty, ""))
+		mwrSet.Status.Summary.Applied = 0
+		mwrSet.Status.Summary.Available = 0
+		mwrSet.Status.Summary.Degraded = 0
+		mwrSet.Status.Summary.Progressing = 0
+		apimeta.SetStatusCondition(&mwrSet.Status.Conditions, GetPlacementDecisionVerified(workapiv1alpha1.ReasonPlacementDecisionEmpty, ""))
 	} else {
-		apimeta.SetStatusCondition(&pw.Status.Conditions, GetPlacementDecisionVerified(workapiv1alpha1.AsExpected, ""))
+		apimeta.SetStatusCondition(&mwrSet.Status.Conditions, GetPlacementDecisionVerified(workapiv1alpha1.ReasonAsExpected, ""))
 	}
 
-	return pw, reconcileContinue, utilerrors.NewAggregate(errs)
+	return mwrSet, reconcileContinue, utilerrors.NewAggregate(errs)
 }
 
 // Return only True status if there all clusters have manifests applied as expected
 func GetManifestworkApplied(reason string, message string) metav1.Condition {
-	if reason == workapiv1alpha1.AsExpected {
-		return getCondition(string(workapiv1alpha1.ManifestworkApplied), reason, message, metav1.ConditionTrue)
+	if reason == workapiv1alpha1.ReasonAsExpected {
+		return getCondition(workapiv1alpha1.ManifestWorkReplicaSetConditionManifestworkApplied, reason, message, metav1.ConditionTrue)
 	}
 
-	return getCondition(string(workapiv1alpha1.ManifestworkApplied), reason, message, metav1.ConditionFalse)
+	return getCondition(workapiv1alpha1.ManifestWorkReplicaSetConditionManifestworkApplied, reason, message, metav1.ConditionFalse)
 
 }
 
 // Return only True status if there are clusters selected
 func GetPlacementDecisionVerified(reason string, message string) metav1.Condition {
-	if reason == workapiv1alpha1.AsExpected {
-		return getCondition(string(workapiv1alpha1.PlacementDecisionVerified), reason, message, metav1.ConditionTrue)
+	if reason == workapiv1alpha1.ReasonAsExpected {
+		return getCondition(workapiv1alpha1.ManifestWorkReplicaSetConditionPlacementVerified, reason, message, metav1.ConditionTrue)
 	}
 
-	return getCondition(string(workapiv1alpha1.PlacementDecisionVerified), reason, message, metav1.ConditionFalse)
+	return getCondition(workapiv1alpha1.ManifestWorkReplicaSetConditionPlacementVerified, reason, message, metav1.ConditionFalse)
 }
 
 func getCondition(conditionType string, reason string, message string, status metav1.ConditionStatus) metav1.Condition {
@@ -149,16 +159,16 @@ func getCondition(conditionType string, reason string, message string, status me
 	}
 }
 
-func CreateManifestWork(pw *workapiv1alpha1.PlaceManifestWork, clusterNS string) (*workv1.ManifestWork, error) {
+func CreateManifestWork(mwrSet *workapiv1alpha1.ManifestWorkReplicaSet, clusterNS string) (*workv1.ManifestWork, error) {
 	if clusterNS == "" {
 		return nil, fmt.Errorf("Invalid cluster namespace")
 	}
 
 	return &workv1.ManifestWork{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      pw.Name,
+			Name:      mwrSet.Name,
 			Namespace: clusterNS,
-			Labels:    map[string]string{PlaceManifestWorkControllerNameLabelKey: pw.Name},
+			Labels:    map[string]string{ManifestWorkReplicaSetControllerNameLabelKey: mwrSet.Name},
 		},
-		Spec: pw.Spec.ManifestWorkTemplate}, nil
+		Spec: mwrSet.Spec.ManifestWorkTemplate}, nil
 }

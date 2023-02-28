@@ -9,24 +9,26 @@ import (
 	workapiv1alpha1 "open-cluster-management.io/api/work/v1alpha1"
 )
 
-var _ = ginkgo.Describe("PlaceManifestWork", func() {
+var _ = ginkgo.Describe("ManifestWorkReplicaSet", func() {
 	var err error
-	ginkgo.Context("Creating a PlaceManifestWork", func() {
-		ginkgo.It("Should create PlaceManifestWork successfullt", func() {
+	ginkgo.Context("Creating a ManifestWorkReplicaSet", func() {
+		ginkgo.It("Should create ManifestWorkReplicaSet successfullt", func() {
 			work := newManifestWork("", "", []runtime.Object{newConfigmap("default", "cm1", nil, nil)}...)
-			placeManifestWork := &workapiv1alpha1.PlaceManifestWork{
+			placementRef := workapiv1alpha1.LocalPlacementReference{Name: "placement-test"}
+			manifestWorkReplicaSet := &workapiv1alpha1.ManifestWorkReplicaSet{
 				ObjectMeta: metav1.ObjectMeta{
-					GenerateName: "placework-",
+					GenerateName: "mwrset-",
 					Namespace:    "default",
 				},
-				Spec: workapiv1alpha1.PlaceManifestWorkSpec{
+				Spec: workapiv1alpha1.ManifestWorkReplicaSetSpec{
 					ManifestWorkTemplate: work.Spec,
+					PlacementRefs:        []workapiv1alpha1.LocalPlacementReference{placementRef},
 				},
 			}
-			placeManifestWork, err = hubWorkClient.WorkV1alpha1().PlaceManifestWorks("default").Create(context.TODO(), placeManifestWork, metav1.CreateOptions{})
+			manifestWorkReplicaSet, err = hubWorkClient.WorkV1alpha1().ManifestWorkReplicaSets("default").Create(context.TODO(), manifestWorkReplicaSet, metav1.CreateOptions{})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-			err = hubWorkClient.WorkV1alpha1().PlaceManifestWorks("default").Delete(context.TODO(), placeManifestWork.Name, metav1.DeleteOptions{})
+			err = hubWorkClient.WorkV1alpha1().ManifestWorkReplicaSets("default").Delete(context.TODO(), manifestWorkReplicaSet.Name, metav1.DeleteOptions{})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		})
 	})
