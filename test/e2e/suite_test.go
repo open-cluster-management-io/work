@@ -21,6 +21,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	clusterclientset "open-cluster-management.io/api/client/cluster/clientset/versioned"
 	workclientset "open-cluster-management.io/api/client/work/clientset/versioned"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -57,6 +58,7 @@ var (
 	spokeDynamicClient dynamic.Interface
 	hubWorkClient      workclientset.Interface
 	spokeWorkClient    workclientset.Interface
+	hubClusterClient   clusterclientset.Interface
 	agentDeployer      workAgentDeployer
 )
 
@@ -104,7 +106,14 @@ var _ = ginkgo.BeforeSuite(func() {
 	spokeKubeClient, err = kubernetes.NewForConfig(managedRestConfig)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
+<<<<<<< HEAD
 	spokeWorkClient, err = workclientset.NewForConfig(managedRestConfig)
+=======
+	hubClusterClient, err = clusterclientset.NewForConfig(restConfig)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
+	hubClient, err = kubernetes.NewForConfig(restConfig)
+>>>>>>> Add e2e/integration test case for manifestworkreplicaset
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 	spokeDynamicClient, err = dynamic.NewForConfig(managedRestConfig)
