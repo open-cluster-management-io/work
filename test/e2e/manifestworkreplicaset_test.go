@@ -7,12 +7,19 @@ import (
 	"github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/rand"
 	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	workapiv1alpha1 "open-cluster-management.io/api/work/v1alpha1"
 )
 
 var _ = ginkgo.Describe("ManifestWorkReplicaSet", func() {
 	var err error
+	var nameSuffix string
+
+	ginkgo.BeforeEach(func() {
+		nameSuffix = rand.String(5)
+	})
+
 	ginkgo.Context("Creating a ManifestWorkReplicaSet", func() {
 		ginkgo.It("Should create ManifestWorkReplicaSet successfullt", func() {
 			ginkgo.By("create manifestworkreplicaset")
@@ -78,7 +85,7 @@ var _ = ginkgo.Describe("ManifestWorkReplicaSet", func() {
 
 			ginkgo.By("check if manifestworkreplicaset status")
 			gomega.Eventually(func() error {
-				mwrs, err := hubWorkClient.WorkV1alpha1().ManifestWorkReplicaSets(metav1.NamespaceDefault).Get(context.TODO(), manifestWorkReplicaSet.Namespace, metav1.GetOptions{})
+				mwrs, err := hubWorkClient.WorkV1alpha1().ManifestWorkReplicaSets(metav1.NamespaceDefault).Get(context.TODO(), manifestWorkReplicaSet.Name, metav1.GetOptions{})
 				if err != nil {
 					return err
 				}
@@ -93,7 +100,7 @@ var _ = ginkgo.Describe("ManifestWorkReplicaSet", func() {
 					return fmt.Errorf("summary is not correct, expect %v, got %v", expectedSummary, mwrs.Status.Summary)
 				}
 
-				if meta.IsStatusConditionTrue(mwrs.Status.Conditions, workapiv1alpha1.ManifestWorkReplicaSetConditionManifestworkApplied) {
+				if !meta.IsStatusConditionTrue(mwrs.Status.Conditions, workapiv1alpha1.ManifestWorkReplicaSetConditionManifestworkApplied) {
 					return fmt.Errorf("manifestwork replicaset condition is not correct")
 				}
 
@@ -103,6 +110,12 @@ var _ = ginkgo.Describe("ManifestWorkReplicaSet", func() {
 			// TODO we should also update manifestwork replicaset and test
 
 			err = hubWorkClient.WorkV1alpha1().ManifestWorkReplicaSets(metav1.NamespaceDefault).Delete(context.TODO(), manifestWorkReplicaSet.Name, metav1.DeleteOptions{})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+			err = hubClusterClient.ClusterV1beta1().Placements(placement.Namespace).Delete(context.TODO(), placement.Name, metav1.DeleteOptions{})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+			err = hubClusterClient.ClusterV1beta1().PlacementDecisions(placementDecision.Namespace).Delete(context.TODO(), placementDecision.Name, metav1.DeleteOptions{})
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		})
 	})

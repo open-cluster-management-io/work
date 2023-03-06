@@ -93,6 +93,9 @@ var _ = ginkgo.BeforeSuite(func() {
 	hubWorkClient, err = workclientset.NewForConfig(hubRestConfig)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
+	hubClusterClient, err = clusterclientset.NewForConfig(hubRestConfig)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+
 	// pick up managedKubeconfig from argument first,
 	// and then fall back to hubKubeconfig
 	if len(managedKubeconfig) == 0 {
@@ -106,14 +109,7 @@ var _ = ginkgo.BeforeSuite(func() {
 	spokeKubeClient, err = kubernetes.NewForConfig(managedRestConfig)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
-<<<<<<< HEAD
 	spokeWorkClient, err = workclientset.NewForConfig(managedRestConfig)
-=======
-	hubClusterClient, err = clusterclientset.NewForConfig(restConfig)
-	gomega.Expect(err).ToNot(gomega.HaveOccurred())
-
-	hubClient, err = kubernetes.NewForConfig(restConfig)
->>>>>>> Add e2e/integration test case for manifestworkreplicaset
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
 	spokeDynamicClient, err = dynamic.NewForConfig(managedRestConfig)
