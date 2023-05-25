@@ -1,3 +1,7 @@
+# Note: Do not edit any file in this repo.
+
+The component is moved to the [ocm](https://github.com/open-cluster-management-io/ocm) as this [task of consolidating code](https://github.com/open-cluster-management-io/ocm/issues/128) is going, please follow the [CONTRIBUTING Guidence in the ocm](https://github.com/open-cluster-management-io/ocm/blob/main/CONTRIBUTING.md) to contribute.
+
 # ManifestWork
 
 Support a primitive that enables resources to be applied to a managed cluster.
