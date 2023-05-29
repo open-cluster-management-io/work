@@ -102,6 +102,11 @@ func (m *AppliedManifestWorkController) sync(ctx context.Context, controllerCont
 		return nil
 	}
 
+	if appliedCondition := meta.FindStatusCondition(manifestWork.Status.Conditions, workapiv1.WorkApplied); appliedCondition == nil {
+		// if the manifestwork has not been applied on the managed cluster yet, do nothing
+		return nil
+	}
+
 	return m.syncManifestWork(ctx, controllerContext, manifestWork, appliedManifestWork)
 }
 
